@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         微软Bing 必应积分自动脚本 (积分检测版)
-// @version      2025.12.03.06
-// @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，积分未涨不计次数，自动换榜单
+// @name         微软Bing 必应积分自动脚本
+// @version      2025.12.03.10
+// @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持精确到分钟的定时自动开始，支持连续无积分自动停止
 // @author       8969
 // @match        *://*.bing.com/search*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=bing.com
@@ -66,13 +66,15 @@ GM_addStyle(`
     #rebang-controls { display: flex; gap: 8px; }
     .rebang-btn-icon { cursor: pointer; font-size: 16px; line-height: 1; opacity: 0.6; }
     .rebang-btn-icon:hover { opacity: 1; }
-    #rebang-body { padding: 12px; max-height: 400px; overflow-y: auto; display: block; }
+    #rebang-body { padding: 12px; max-height: 520px; overflow-y: auto; display: block; }
     #rebang-body.minimized { display: none; }
     .control-row { display: flex; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 5px; font-size: 12px; }
     .form-select { padding: 2px 5px; border-radius: 4px; border: 1px solid #ccc; max-width: 100px; font-size: 12px; }
+    .time-select { width: 45px; text-align: center; } 
     button.rebang-btn { background: #0078d4; color: white; border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     button.rebang-btn:hover { background: #006abc; }
     button.rebang-btn.stop { background: #d9534f; }
+    button.rebang-btn.save { background: #107c10; margin-left: auto; }
     #ext-keywords-list { margin-top: 10px; display: flex; flex-wrap: wrap; }
     .keyword-link { display: block; width: 100%; padding: 3px 0; text-decoration: none; color: #333; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .keyword-link:hover { color: #0078d4; background: rgba(0,0,0,0.03); }
@@ -90,25 +92,31 @@ const autoSearchLockKey = `${prefix}AutoSearchLock`;
 const autoSearchLockExpiresKey = `${prefix}AutoSearchLockExpires`;
 const widgetPosKey = `${prefix}WidgetPosition`;
 const widgetStateKey = `${prefix}WidgetState`;
-const lastPointsKey = `${prefix}LastPoints`; // 记录上次搜索前的积分
+const lastPointsKey = `${prefix}LastPoints`; 
+const autoStartHourKey = `${prefix}AutoStartHour`; 
+const autoStartMinKey = `${prefix}AutoStartMin`; 
+const maxNoGainLimitKey = `${prefix}MaxNoGainLimit`; // 新增：无积分最大重试次数配置
+const consecutiveNoGainKey = `${prefix}ConsecutiveNoGainCount`; // 新增：当前连续无积分次数
 
 function getAutoSearchCountKey() {
   return `${prefix}AutoSearchCount_${new Date().toISOString().split("T")[0]}`;
 }
 
+function getAutoStartTriggeredKey() {
+  return `${prefix}AutoStartTriggered_${new Date().toISOString().split("T")[0]}`;
+}
+
 // === 核心逻辑：获取当前积分 ===
 function getBingPoints() {
-    // 适配用户提供的HTML结构: <span class="points-container">16395</span>
     let $pointsEl = $(".points-container");
     if ($pointsEl.length > 0) {
         let text = $pointsEl.text().trim();
-        // 去除逗号 (例如 16,395 -> 16395)
         let points = parseInt(text.replace(/,/g, ''), 10);
         if (!isNaN(points)) {
             return points;
         }
     }
-    return null; // 未找到或解析失败
+    return null; 
 }
 
 function stopAutoSearch(msg) {
@@ -158,18 +166,15 @@ function doSearch(keyword) {
 }
 
 function doAutoSearch() {
-  // 1. 等待积分元素加载 (防止页面刚开还没有积分)
   let currentPoints = getBingPoints();
   if (currentPoints === null) {
-      // 尝试等待，如果页面加载太久还没积分可能是未登录，暂不阻塞，视为0
       if (document.readyState === 'complete') {
           currentPoints = 0; 
       } else {
-          return; // 继续等待 DOM
+          return; 
       }
   }
 
-  // 2. 检查时间锁
   let jobLockExpires = localStorage.getItem(autoSearchLockExpiresKey) ?? "";
   let now = new Date();
   
@@ -182,65 +187,64 @@ function doAutoSearch() {
       }
   }
 
-  // === 积分检测与计数逻辑 ===
-  // 此时冷却已结束，准备进行下一次搜索。我们利用这个时机结算"上一次"搜索的结果。
-  // 我们比较：CurrentPoints(现在) vs LastPoints(上次搜索前保存的值)
-  
+  // === 积分变动与停损检测 ===
   let lastPoints = localStorage.getItem(lastPointsKey);
-  let currentSearchCount = Number(localStorage.getItem(getAutoSearchCountKey()) ?? 0); // 注意：默认为0
+  let currentSearchCount = Number(localStorage.getItem(getAutoSearchCountKey()) ?? 0); 
   let isPointsIncreased = false;
+  
+  // 读取停损设置
+  let maxNoGainLimit = Number(localStorage.getItem(maxNoGainLimitKey) ?? 10);
+  let consecutiveNoGain = Number(localStorage.getItem(consecutiveNoGainKey) ?? 0);
 
-  // 如果有记录上次的积分，进行比对
   if (lastPoints !== null) {
       let lastP = Number(lastPoints);
       if (currentPoints > lastP) {
-          // 积分涨了！计入有效搜索
+          // 积分增加：成功
           currentSearchCount++;
           localStorage.setItem(getAutoSearchCountKey(), currentSearchCount);
           isPointsIncreased = true;
-          console.log(`[Rebang] Points increased: ${lastP} -> ${currentPoints}. Count: ${currentSearchCount}`);
+          
+          // 只要有一次成功，重置连续失败计数
+          localStorage.setItem(consecutiveNoGainKey, 0);
+          console.log(`[Rebang] Points increased: ${lastP} -> ${currentPoints}. Reset fail count.`);
       } else {
-          // 积分没涨（可能达到上限，或者网络问题），不计入次数
-          console.log(`[Rebang] Points unchanged: ${currentPoints}. Not counting.`);
+          // 积分未增加
+          consecutiveNoGain++;
+          localStorage.setItem(consecutiveNoGainKey, consecutiveNoGain);
+          console.log(`[Rebang] No gain. Count: ${consecutiveNoGain}/${maxNoGainLimit}`);
+          
+          if (consecutiveNoGain >= maxNoGainLimit) {
+              stopAutoSearch(`连续${consecutiveNoGain}次无积分，已停止保护。`);
+              return; // 终止后续操作
+          }
       }
-  } else {
-      // 第一次运行或被重置，无法比较，暂不增加计数，只初始化
-      // 或者：如果是第一次启动脚本，我们可以不计数，直接开始搜第一个词
   }
   
   $("#ext-current-count").text(currentSearchCount);
 
-  // 3. 检查是否达到目标限制
   let limitSearchCount = Number($("#ext-autosearch-limit").val() ?? 50);
   if (currentSearchCount >= limitSearchCount) {
-      localStorage.removeItem(lastPointsKey); // 清理
+      localStorage.removeItem(lastPointsKey); 
       stopAutoSearch("今日积分任务已达标！");
       return;
   }
 
-  // 4. 准备下一次搜索
-  
-  // 设置随机延迟
-  let randomDelay = Math.floor(Math.random() * 6000) + 8000; // 8-14秒
+  let randomDelay = Math.floor(Math.random() * 6000) + 8000; 
   let t = new Date();
   t.setSeconds(t.getSeconds() + randomDelay / 1000);
   localStorage.setItem(autoSearchLockExpiresKey, t);
 
-  // 获取关键词
   let currentKeywordIndex = Number(localStorage.getItem(currentKeywordIndexKey) ?? 0);
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = JSON.parse(sessionStorage.getItem(cacheKey));
 
   if (keywords && keywords.length > currentKeywordIndex) {
-    // === 关键：在搜索前，保存当前积分作为"LastPoints" ===
-    // 这样页面刷新后，脚本就能知道搜索前的积分是多少
     localStorage.setItem(lastPointsKey, currentPoints);
 
-    // 索引+1 (无论积分是否增加，都换下一个词，防止死循环)
     currentKeywordIndex++;
     localStorage.setItem(currentKeywordIndexKey, currentKeywordIndex);
 
-    let msg = isPointsIncreased ? `积分+${currentPoints - Number(lastPoints)}! ` : (lastPoints !== null ? "积分未变. " : "");
+    let msg = isPointsIncreased ? `积分+${currentPoints - Number(lastPoints)}! ` : (lastPoints !== null ? `无分(${consecutiveNoGain}/${maxNoGainLimit}). ` : "");
     showUserMessage(`${msg}搜索: ${truncateText(keywords[currentKeywordIndex - 1].title, 15)}`);
     
     doSearch(keywords[currentKeywordIndex - 1].title);
@@ -342,11 +346,65 @@ function makeDraggable(elementId, handleId) {
     });
 }
 
+function checkAutoStart() {
+    let startHourStr = localStorage.getItem(autoStartHourKey);
+    let startMinStr = localStorage.getItem(autoStartMinKey);
+    
+    if (!startHourStr || !startMinStr) return;
+    let startHour = parseInt(startHourStr, 10);
+    let startMin = parseInt(startMinStr, 10);
+
+    if (isNaN(startHour) || isNaN(startMin) || startHour === -1 || startMin === -1) return;
+
+    let triggeredKey = getAutoStartTriggeredKey();
+    if (localStorage.getItem(triggeredKey) === "true") return;
+
+    let now = new Date();
+    if (now.getHours() > startHour || (now.getHours() === startHour && now.getMinutes() >= startMin)) {
+        
+        let limit = Number($("#ext-autosearch-limit").val());
+        let current = Number(localStorage.getItem(getAutoSearchCountKey()) ?? 0);
+        
+        if (localStorage.getItem(autoSearchLockKey) !== "on" && current < limit) {
+             let niceMin = startMin < 10 ? '0'+startMin : startMin;
+             console.log(`[Rebang] Auto-start triggered. Time: ${now.toLocaleTimeString()}, Target: ${startHour}:${niceMin}`);
+             localStorage.setItem(triggeredKey, "true"); 
+             
+             $("#ext-autosearch-lock").click(); 
+        } else if (current >= limit) {
+             localStorage.setItem(triggeredKey, "true");
+        }
+    }
+}
+
+function getHourOptionsHtml(selected) {
+    let html = "<option value='-1'>--</option>";
+    for(let i=0; i<24; i++) {
+        let val = i.toString();
+        html += `<option value='${val}' ${val == selected ? 'selected' : ''}>${i}</option>`;
+    }
+    return html;
+}
+
+function getMinOptionsHtml(selected) {
+    let html = "<option value='-1'>--</option>";
+    for(let i=0; i<60; i++) {
+        let val = i.toString();
+        let label = i < 10 ? '0' + i : i;
+        html += `<option value='${val}' ${val == selected ? 'selected' : ''}>${label}</option>`;
+    }
+    return html;
+}
+
 function initControls() {
   if (window.top !== window.self) return;
   $("#rebang").remove(); $("#rebang-widget").remove();
 
   if ($("#rebang-widget").length == 0) {
+    let savedHour = localStorage.getItem(autoStartHourKey) ?? "-1";
+    let savedMin = localStorage.getItem(autoStartMinKey) ?? "-1";
+    let savedMaxNoGain = localStorage.getItem(maxNoGainLimitKey) ?? "10";
+
     const widgetHtml = `
     <div id='rebang-widget'>
         <div id='rebang-header'>
@@ -369,6 +427,22 @@ function initControls() {
                 <label>次</label>
                 <button id='ext-autosearch-lock' class='rebang-btn' type='button' style='margin-left:auto;'>开始</button>
             </div>
+            
+            <div class='control-row' style='background:#f0f0f0; padding:5px; border-radius:4px;'>
+                 <label>自动:</label>
+                 <select id='ext-autostart-hour' class='form-select time-select'>${getHourOptionsHtml(savedHour)}</select>
+                 <label>:</label>
+                 <select id='ext-autostart-min' class='form-select time-select'>${getMinOptionsHtml(savedMin)}</select>
+                 <button id='ext-save-autostart' class='rebang-btn save' type='button'>设置</button>
+            </div>
+            
+            <!-- 新增：无积分停止检测 -->
+            <div class='control-row'>
+                 <label>失败停:</label>
+                 <input type='number' id='ext-max-nogain' style='width:40px;text-align:center;border:1px solid #ccc;border-radius:4px;' value='${savedMaxNoGain}'>
+                 <label>次无分后停止</label>
+            </div>
+
             <label id='ex-user-msg'></label>
             <div id='ext-keywords-list'></div>
         </div>
@@ -384,7 +458,6 @@ function initControls() {
         else { body.addClass("minimized"); $(this).text("+"); localStorage.setItem(widgetStateKey, 'true'); }
     });
 
-    // 加载榜单数据
     let channelList = sessionStorage.getItem(channelListKey);
     if (channelList !== null) { initChannels(JSON.parse(channelList), getCurrentChannel()); }
     else {
@@ -412,6 +485,24 @@ function initControls() {
   $("#ext-keywords-linktype").change(function (e) { initKeywords(); });
   $("#ext-autosearch-limit").change(function (e) { localStorage.setItem(limitSearchCountKey, $(this).val()); });
   $("#ext-keywords-refresh").click(function (e) { sessionStorage.removeItem(getCurrentChannelKeywordsCacheKey()); initKeywords(); });
+  
+  // 保存无分停止设置
+  $("#ext-max-nogain").change(function(e) { localStorage.setItem(maxNoGainLimitKey, $(this).val()); });
+
+  $("#ext-save-autostart").click(function(e) { 
+      let h = $("#ext-autostart-hour").val();
+      let m = $("#ext-autostart-min").val();
+      localStorage.setItem(autoStartHourKey, h);
+      localStorage.setItem(autoStartMinKey, m);
+      
+      localStorage.removeItem(getAutoStartTriggeredKey());
+
+      if(h === "-1" || m === "-1") {
+          showUserMessage("已关闭自动启动");
+      } else {
+          showUserMessage(`已设置: 每天 ${h}:${m < 10 && m !== "-1" ? '0'+m : m} 后自动执行`);
+      }
+  });
 
   $("#ext-autosearch-lock").click(function (e) {
     if (localStorage.getItem(autoSearchLockKey) == "on") {
@@ -423,11 +514,13 @@ function initControls() {
         showUserMessage("今日任务已完成！");
       } else {
         localStorage.setItem(autoSearchLockKey, "on");
+        // 点击开始时，重置失败计数
+        localStorage.setItem(consecutiveNoGainKey, 0); 
+        
         $(this).text("停止").addClass("stop");
         showUserMessage("初始化中...");
-        localStorage.setItem(autoSearchLockExpiresKey, ""); // 立即开始
+        localStorage.setItem(autoSearchLockExpiresKey, ""); 
         
-        // 点击开始时，尝试记录当前积分，以便第一次搜索也能被正确比对（如果点开始时已经有分）
         let p = getBingPoints();
         if(p !== null) localStorage.setItem(lastPointsKey, p);
         
@@ -443,6 +536,9 @@ function initControls() {
     if (window.top === window.self) {
       this.intervalId = this.intervalId || setInterval(function () {
           if ($("#rebang-widget").length == 0) { initControls(); }
+          
+          checkAutoStart();
+
           if ($("#ext-autosearch-limit").val().trim() != "" && localStorage.getItem(autoSearchLockKey) == "on") {
              doAutoSearch();
           }
