@@ -1,6 +1,5 @@
 // ==UserScript==
 // @name         微软Bing 必应积分自动脚本 (积分检测版)
-// @namespace    https://greasyfork.org/zh-CN/users/1513778-chris-lu
 // @version      2025.12.03.06
 // @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，积分未涨不计次数，自动换榜单
 // @author       8969
