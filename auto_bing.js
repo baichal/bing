@@ -38,15 +38,36 @@ GM_addStyle(`
         display: flex;
         flex-direction: column;
         overflow: hidden;
+        color-scheme: light; /* 默认亮色 */
+    }
+
+    /* === 滚动条美化 === */
+    #rebang-body::-webkit-scrollbar { width: 6px; }
+    #rebang-body::-webkit-scrollbar-track { background: transparent; }
+    #rebang-body::-webkit-scrollbar-thumb { background-color: #ccc; border-radius: 3px; }
+    #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #aaa; }
+
+    /* === 自动设置行样式 (移除行内样式，改为Class控制) === */
+    .auto-row {
+        background: #f0f0f0; 
+        padding: 5px; 
+        border-radius: 4px;
+        border: 1px solid transparent; /* 占位防止抖动 */
     }
 
     /* === 适配系统级深色模式 === */
     @media (prefers-color-scheme: dark) {
-        #rebang-widget { background-color: #2b2b2b; border-color: #444; color: #eee; }
+        #rebang-widget { background-color: #2b2b2b; border-color: #444; color: #eee; color-scheme: dark; }
         #rebang-header { background-color: #3a3a3a !important; border-bottom-color: #444 !important; }
         .keyword-link { color: #bbb !important; }
         .keyword-link:hover { color: #fff !important; }
         #rebang-widget select, #rebang-widget input { background-color: #444; color: #fff; border: 1px solid #555; }
+        #rebang-widget select option { background-color: #444; color: #fff; }
+        #rebang-body::-webkit-scrollbar-thumb { background-color: #555; }
+        #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #777; }
+        
+        /* 自动部分深色适配 */
+        .auto-row { background-color: #3a3a3a; border-color: #444; }
     }
 
     /* === 适配 Bing 网页版强制深色模式 (类名 .b_dark) === */
@@ -54,22 +75,28 @@ GM_addStyle(`
         background-color: #2b2b2b;
         border-color: #444;
         color: #eee;
+        color-scheme: dark;
     }
     .b_dark #rebang-header {
         background-color: #3a3a3a !important;
         border-bottom-color: #444 !important;
     }
-    .b_dark #rebang-widget .keyword-link {
-        color: #bbb !important;
-    }
-    .b_dark #rebang-widget .keyword-link:hover {
-        color: #fff !important;
-    }
+    .b_dark #rebang-widget .keyword-link { color: #bbb !important; }
+    .b_dark #rebang-widget .keyword-link:hover { color: #fff !important; }
     .b_dark #rebang-widget select, 
     .b_dark #rebang-widget input {
         background-color: #444;
         color: #fff;
         border: 1px solid #555;
+    }
+    .b_dark #rebang-widget select option { background-color: #444; color: #fff; }
+    .b_dark #rebang-body::-webkit-scrollbar-thumb { background-color: #555; }
+    .b_dark #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #777; }
+
+    /* 自动部分深色适配 (Bing类名) */
+    .b_dark .auto-row { 
+        background-color: #3a3a3a; 
+        border-color: #444; 
     }
 
     /* === 通用组件样式 === */
@@ -87,10 +114,10 @@ GM_addStyle(`
     #rebang-controls { display: flex; gap: 8px; }
     .rebang-btn-icon { cursor: pointer; font-size: 16px; line-height: 1; opacity: 0.6; }
     .rebang-btn-icon:hover { opacity: 1; }
-    #rebang-body { padding: 12px; max-height: 520px; overflow-y: auto; display: block; }
+    #rebang-body { padding: 12px; max-height: 520px; overflow-y: auto; display: block; scrollbar-width: thin; }
     #rebang-body.minimized { display: none; }
     .control-row { display: flex; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 5px; font-size: 12px; }
-    .form-select { padding: 2px 5px; border-radius: 4px; border: 1px solid #ccc; max-width: 100px; font-size: 12px; }
+    .form-select { padding: 2px 5px; border-radius: 4px; border: 1px solid #ccc; max-width: 100px; font-size: 12px; outline: none; }
     .time-select { width: 45px; text-align: center; }
     button.rebang-btn { background: #0078d4; color: white; border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     button.rebang-btn:hover { background: #006abc; }
@@ -900,7 +927,7 @@ function initSearchControls() {
                  </div>
                  <label style="margin-left:5px">重试:</label>
                  <input type='number' id='ext-daily-retries' style='width:35px;text-align:center;border:1px solid #ccc;border-radius:4px;' value='${savedDailyRetries}'>
-                 <label>次跳过</label>
+                 <label>次</label>
             </div>
             <div class='control-row'>
                 <label>有效搜:</label>
@@ -910,7 +937,8 @@ function initSearchControls() {
                 <button id='ext-autosearch-lock' class='rebang-btn' type='button' style='margin-left:auto;'>开始</button>
             </div>
 
-            <div class='control-row' style='background:#f0f0f0; padding:5px; border-radius:4px;'>
+            <!-- 关键修改点：移除了 style="background:..."，改用 class="auto-row" -->
+            <div class='control-row auto-row'>
                  <label>自动:</label>
                  <select id='ext-autostart-hour' class='form-select time-select'>${getHourOptionsHtml(savedHour)}</select>
                  <label>:</label>
@@ -944,7 +972,6 @@ function initSearchControls() {
     if (channelList !== null) { 
         let listArr = JSON.parse(channelList);
         initChannels(listArr, getCurrentChannel()); 
-        // 关键：检查是否需要跨天切换
         checkAndRandomizeDailyChannel(listArr);
     }
     else {
@@ -952,7 +979,6 @@ function initSearchControls() {
         if (response.code == 200 && response.data && response.data.platforms) {
           sessionStorage.setItem(channelListKey, JSON.stringify(response.data.platforms));
           initChannels(response.data.platforms, getCurrentChannel());
-          // 关键：检查是否需要跨天切换
           checkAndRandomizeDailyChannel(response.data.platforms);
         } else { showUserMessage(`获取热榜频道失败。`); }
       });
@@ -1000,7 +1026,7 @@ function initSearchControls() {
       }
   });
 
-  // 点击“开始/停止”按钮
+ // 点击“开始/停止”按钮
   $("#ext-autosearch-lock").click(function (e) {
     if (getVal(autoSearchLockKey, "off") == "on") {
       stopAutoSearch("自动搜索已停止");
@@ -1042,8 +1068,10 @@ function initSearchControls() {
         showUserMessage("初始化中...");
         setVal(autoSearchLockExpiresKey, "");
 
-        let p = getBingPoints();
-        if(p !== null) setVal(lastPointsKey, p);
+        // 启动时将 lastPoints 设为 null，而不是当前分。
+        // 这样第一次进入 doAutoSearch 时会跳过积分对比逻辑，避免"无分"误报。
+        setVal(lastPointsKey, null); 
+        // ===================
 
         doAutoSearch();
     }
