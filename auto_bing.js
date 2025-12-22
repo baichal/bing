@@ -20,6 +20,7 @@
 // 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
 // 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
 const TEST_MODE = 0;
+const SCRIPT_LOAD_DATE = getLocalDateStr(); // 记录脚本加载时的日期.
 
 // ==========================================
 // 样式定义区 (UI)
@@ -49,8 +50,8 @@ GM_addStyle(`
 
     /* === 自动设置行样式 (移除行内样式，改为Class控制) === */
     .auto-row {
-        background: #f0f0f0; 
-        padding: 5px; 
+        background: #f0f0f0;
+        padding: 5px;
         border-radius: 4px;
         border: 1px solid transparent; /* 占位防止抖动 */
     }
@@ -65,7 +66,7 @@ GM_addStyle(`
         #rebang-widget select option { background-color: #444; color: #fff; }
         #rebang-body::-webkit-scrollbar-thumb { background-color: #555; }
         #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #777; }
-        
+
         /* 自动部分深色适配 */
         .auto-row { background-color: #3a3a3a; border-color: #444; }
     }
@@ -83,7 +84,7 @@ GM_addStyle(`
     }
     .b_dark #rebang-widget .keyword-link { color: #bbb !important; }
     .b_dark #rebang-widget .keyword-link:hover { color: #fff !important; }
-    .b_dark #rebang-widget select, 
+    .b_dark #rebang-widget select,
     .b_dark #rebang-widget input {
         background-color: #444;
         color: #fff;
@@ -94,9 +95,9 @@ GM_addStyle(`
     .b_dark #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #777; }
 
     /* 自动部分深色适配 (Bing类名) */
-    .b_dark .auto-row { 
-        background-color: #3a3a3a; 
-        border-color: #444; 
+    .b_dark .auto-row {
+        background-color: #3a3a3a;
+        border-color: #444;
     }
 
     /* === 通用组件样式 === */
@@ -154,6 +155,83 @@ const lastPointsKey = `${prefix}LastPoints`; // 上次记录的积分
 const autoStartHourKey = `${prefix}AutoStartHour`; // 自动开始小时
 const autoStartMinKey = `${prefix}AutoStartMin`; // 自动开始分钟
 const limitSearchCountKey = `${prefix}LimitSearchCount`; // 每日搜索限制
+
+// ==========================================
+// 新增：多标签页互斥与协同逻辑常量
+// ==========================================
+const globalLockKey = `${prefix}GlobalLastRunTime`;   // 全局最后一次执行时间（所有标签页共享）
+const globalMasterTabKey = `${prefix}GlobalMasterTabId`; // 当前主控标签页的ID
+const currentTabId = Date.now() + "_" + Math.floor(Math.random() * 10000); // 当前页面的唯一ID
+
+// ==========================================
+// 新增：标签页状态同步函数
+// ==========================================
+// 用于判断当前标签页是否应该显示UI或执行任务
+function syncTabStatus() {
+    // 获取全局最后执行时间
+    let lastRun = Number(getVal(globalLockKey, 0));
+    let masterId = getVal(globalMasterTabKey, "");
+    let now = Date.now();
+
+    // 判定主控权逻辑：
+    let isMaster = false;
+    if (masterId === currentTabId) {
+        isMaster = true;
+    } else if (now - lastRun > 15000) {
+        // 抢占主控权 (如果上次执行超过15秒，视为对方卡死)
+        setVal(globalMasterTabKey, currentTabId);
+        setVal(globalLockKey, now);
+        isMaster = true;
+        console.log(`[Rebang] tab ${currentTabId} took over master control.`);
+    }
+
+    // === 【核心修改点】 ===
+    // 移除之前的 .hide() 逻辑，改为所有页面常驻显示
+    if ($("#rebang-widget").length > 0) {
+        $("#rebang-widget").show(); // 强制显示
+
+        if (isMaster) {
+            // 如果是主控页，正常显示
+            $("#rebang-title").text("🔥 必应积分助手 (主控)");
+            $("#rebang-widget").css("opacity", "1"); // 完全不透明
+        } else {
+            // 如果是副页面，也显示，但标题提示“待机”
+            // 这样你就可以在任何页面修改设置了
+            $("#rebang-title").text("💤 必应积分助手 (待机)");
+            $("#rebang-widget").css("opacity", "0.85"); // 稍微透明一点点以示区分
+        }
+
+        // 移除强制同步最小化的逻辑，防止你在A页面展开，B页面突然把你关上的情况
+        // 保留手动点击折叠即可
+    }
+
+    return isMaster;
+}
+
+// ==========================================
+// 新增：新建标签页执行兜底逻辑
+// ==========================================
+function openNewWorkerTab() {
+    // 只有在开启自动搜索且还没搜完时才触发
+    if (getVal(autoSearchLockKey, "off") === "on") {
+        showUserMessage("页面卡滞，开启新窗口接力...");
+
+        // 1. 打开新标签页
+        window.open("https://www.bing.com/search?q=Bing+Rewards+Relay&form=QBRE", "_blank");
+
+        // 2. 【关键修改】不要调用 stopAutoSearch()！
+        // 因为 stopAutoSearch 会把全局开关设为 off，导致新页面不运行。
+
+        // 3. 可以在本地做一个视觉上的停止，或者直接关闭当前页（如果浏览器允许）
+        $("#ext-autosearch-lock").text("已移交").addClass("stop");
+
+        // 4. 可选：尝试关闭当前死循环的页面 (大部分浏览器会拦截脚本关闭非脚本打开的页面，但可以尝试)
+        // window.close();
+
+        // 5. 或者简单地跳转空白页，彻底结束当前页面的逻辑干扰
+        // window.location.href = "about:blank";
+    }
+}
 
 // 状态 Key (用于跨标签页通信)
 const rewardsFailCountKey = `${prefix}RewardsFailCount`; // 积分页：连续未涨分计数
@@ -222,7 +300,7 @@ function getSearchPagePoints() {
     }
 
     // 优先级 2: 移动端/侧边栏 (备用)
-    let $sidebarPoints = $(".b_id_c .id_text"); 
+    let $sidebarPoints = $(".b_id_c .id_text");
     if ($sidebarPoints.length > 0) {
         return parsePointsText($sidebarPoints.first().text());
     }
@@ -233,7 +311,7 @@ function getSearchPagePoints() {
         let txt = $oldId.text().trim();
         if (txt && /\d/.test(txt)) return parsePointsText(txt);
     }
-    
+
     return null;
 }
 
@@ -290,7 +368,7 @@ function checkAndRandomizeDailyChannel(channelList) {
     if (!channelList || channelList.length === 0) return;
 
     const todayStr = getLocalDateStr(); // 获取本地日期
-    const lastSelectDate = localStorage.getItem(`${prefix}LastAutoSelectDate`); 
+    const lastSelectDate = localStorage.getItem(`${prefix}LastAutoSelectDate`);
 
     // 如果上次选择日期不是今天
     if (lastSelectDate !== todayStr) {
@@ -302,16 +380,16 @@ function checkAndRandomizeDailyChannel(channelList) {
 
         // 更新状态
         localStorage.setItem(selectedChannelKey, newChannel);
-        localStorage.setItem(currentKeywordIndexKey, 0); 
-        localStorage.setItem(`${prefix}LastAutoSelectDate`, todayStr); 
+        localStorage.setItem(currentKeywordIndexKey, 0);
+        localStorage.setItem(`${prefix}LastAutoSelectDate`, todayStr);
 
         // 强制清除 SessionStorage 中的旧缓存，迫使 initKeywords 重新请求最新数据
-        sessionStorage.removeItem(`${prefix}${newChannel}`); 
-        
+        sessionStorage.removeItem(`${prefix}${newChannel}`);
+
         // 更新 UI
         $("#ext-channels").val(newChannel);
         showUserMessage(`新的一天，已随机切换至: ${newChannel}`);
-        
+
         // 重新初始化
         initKeywords();
     }
@@ -366,7 +444,7 @@ function doSearch(keyword) {
     if ($input.length > 0 && $btn.length > 0) {
         // 填入关键词
         $input.val(keyword);
-        
+
         // 触发 React/Angular 等框架可能需要的 input 事件
         try {
             let evt = new Event('input', { bubbles: true });
@@ -376,7 +454,7 @@ function doSearch(keyword) {
 
         // 模拟点击
         $btn[0].click();
-    } 
+    }
     else {
         // 2. 兜底方案：如果找不到按钮，手动构建带参数的 URL
         // &form=QBRE 是 Bing 判断是否为“手动搜索”的核心参数
@@ -409,10 +487,10 @@ function addTaskToBlacklist(url) {
 function handleRewardsPage() {
     let isLocked = getVal(autoSearchLockKey, "off");
     let currentPoints = getBingPoints();
-    
+
     if (currentPoints !== null) {
         $("#ext-rewards-points").text(currentPoints);
-        setVal(lastPointsKey, currentPoints); 
+        setVal(lastPointsKey, currentPoints);
     }
 
     // 如果脚本未开启，不执行任何操作
@@ -430,7 +508,7 @@ function handleRewardsPage() {
     let $cardGroup = $("#more-activities");
     if ($cardGroup.length === 0) {
         showUserMessage("等待任务列表加载...");
-        return; 
+        return;
     }
 
     // 检测是否处于点击后的冷却期
@@ -441,20 +519,20 @@ function handleRewardsPage() {
     if (now - lastClickTime < waitDuration) {
         let left = Math.ceil((waitDuration - (now - lastClickTime)) / 1000);
         showUserMessage(`等待验证... ${left}s`);
-        
+
         if (left <= 1) {
-             setVal(rewardsClickTimeKey, 0); 
+             setVal(rewardsClickTimeKey, 0);
              showUserMessage("刷新状态...");
-             location.reload(); 
+             location.reload();
         }
-        return; 
+        return;
     }
 
     // 状态准备
     let rewardsLastPoints = Number(getVal(rewardsLastPointsKey, -1));
     let failCount = Number(getVal(rewardsFailCountKey, 0));
     let maxRetries = Number(getVal(dailyTaskMaxRetriesKey, 3));
-    let blacklist = getTaskBlacklist(); 
+    let blacklist = getTaskBlacklist();
 
     // 寻找未完成的任务
     let $cards = $("#more-activities mee-card");
@@ -464,18 +542,18 @@ function handleRewardsPage() {
     let targetUrl = "";
 
     $cards.each(function() {
-        if (targetLink) return; 
+        if (targetLink) return;
 
         let $icon = $(this).find(".mee-icon-SkypeCircleCheck");
-        
+
         if ($icon.length === 0) { // 没有绿色勾勾
             let $link = $(this).find("a");
             if ($link.length > 0) {
                 let url = $link.attr("href");
-                
+
                 // 跳过黑名单
                 if (blacklist.includes(url)) {
-                    return; 
+                    return;
                 }
 
                 hasPending = true;
@@ -492,20 +570,20 @@ function handleRewardsPage() {
             if (failCount > 0) console.log(`[Rebang] Points increased! Reset fail count.`);
             failCount = 0;
             setVal(rewardsFailCountKey, 0);
-        } 
+        }
     }
 
     // 熔断逻辑：单任务失败次数过多
     if (hasPending && targetLink && failCount > maxRetries) {
         console.log(`[Rebang] Task limit (${failCount}) reached for: ${targetName}`);
         showUserMessage(`任务[${truncateText(targetName,6)}]多次无分，拉黑跳过...`);
-        
+
         addTaskToBlacklist(targetUrl); // 加入黑名单
         setVal(rewardsFailCountKey, 0); // 重置计数
         setTimeout(() => { location.reload(); }, 1500); // 刷新页面
         return;
     }
-    
+
     // 所有任务完成或被跳过
     if (!hasPending && $cards.length > 0) {
         console.log("[Rebang] Daily tasks done (or all skipped).");
@@ -521,12 +599,12 @@ function handleRewardsPage() {
     if (hasPending && targetLink) {
         // 预判失败：如果不是第一次点击且积分没涨，先记一次失败
         if (rewardsLastPoints !== -1 && currentPoints !== null && currentPoints <= rewardsLastPoints) {
-             failCount++; 
+             failCount++;
              setVal(rewardsFailCountKey, failCount);
-             
+
              if (failCount > maxRetries) {
                  showUserMessage(`重试超限，准备跳过...`);
-                 location.reload(); 
+                 location.reload();
                  return;
              }
         } else if (currentPoints > rewardsLastPoints) {
@@ -535,32 +613,49 @@ function handleRewardsPage() {
         }
 
         showUserMessage(`执行: ${truncateText(targetName, 8)} (失误:${failCount})`);
-        
+
         if (currentPoints !== null) setVal(rewardsLastPointsKey, currentPoints);
-        
-        setVal(rewardsClickTimeKey, now); 
+
+        setVal(rewardsClickTimeKey, now);
         targetLink[0].click();
     }
 }
 
 // ==========================================
-// 页面逻辑：Bing 搜索页
+// Bing 搜索页
 // ==========================================
 function doAutoSearch() {
+  // --- 多标签页互斥检查 (要求1 & 4) ---
+  // 每次执行搜索前，先同步状态。如果不是主控页，且有其他页面刚跑过，则跳过本次执行。
+  let isMaster = syncTabStatus();
+  let lastGlobalRun = Number(getVal(globalLockKey, 0));
+  let nowTime = Date.now();
+  const relayRetryKey = `${prefix}RelayRetryCount`; // 换页重试计数
+
+
+  // 如果我不是主控，且上次全局执行在 8秒内 (正常搜索间隔是8-14秒)，则我保持静默
+  if (!isMaster && (nowTime - lastGlobalRun < 8000)) {
+      console.log(`[Rebang] Slave tab standby. Master running.`);
+      return;
+  }
+  // -----------------------------------
+
   let enableDaily = getVal(enableDailyTasksKey, false);
   let dailyDone = getVal(getDailyTasksDoneKey(), false);
 
   // 1. 每日任务跳转逻辑 (优先执行)
   if (enableDaily && !dailyDone) {
       let lastRedirect = Number(getVal(getDailyTaskRedirectTimeKey(), 0));
-      let nowTime = new Date().getTime();
-
       // 任务页跳转冷却 (60秒)
       if (nowTime - lastRedirect < 60 * 1000) {
           let waitSec = Math.ceil((60000 - (nowTime - lastRedirect)) / 1000);
           showUserMessage(`等待任务页冷却... ${waitSec}s`);
           return;
       }
+
+      // 抢占锁，防止其他页面同时也跳
+      setVal(globalLockKey, nowTime);
+      setVal(globalMasterTabKey, currentTabId);
 
       let currentPoints = getBingPoints();
       let jumpLastPoints = Number(getVal(jumpLastPointsKey, -1));
@@ -589,7 +684,7 @@ function doAutoSearch() {
 
       showUserMessage(`前往任务页 (无分次数:${jumpFailCount})...`);
 
-      if (currentPoints !== null) setVal(jumpLastPointsKey, currentPoints); 
+      if (currentPoints !== null) setVal(jumpLastPointsKey, currentPoints);
       setVal(getDailyTaskRedirectTimeKey(), nowTime);
       setVal(rewardsClickTimeKey, 0);
       setVal(rewardsLastPointsKey, -1);
@@ -604,12 +699,11 @@ function doAutoSearch() {
   // 2. 搜索刷分主逻辑
   let currentPoints = getBingPoints();
   if (currentPoints === null) {
-      // 如果完全加载了还没分，可能是0分或者获取失败，暂且当作0
       if (document.readyState === 'complete') { currentPoints = 0; }
       else { return; }
   }
 
-  // 搜索冷却时间检查
+  // 搜索冷却时间检查 (基于本地时间，防止刷太快)
   let jobLockExpires = getVal(autoSearchLockExpiresKey, "");
   let now = new Date();
 
@@ -637,15 +731,36 @@ function doAutoSearch() {
           setVal(getAutoSearchCountKey(), currentSearchCount);
           isPointsIncreased = true;
           setVal(consecutiveNoGainKey, 0);
+
+          // 【修复】积分涨了，说明当前页面正常，重置“换页重试计数”
+          setVal(relayRetryKey, 0);
+
           console.log(`[Rebang] Points increased: ${lastP} -> ${currentPoints}.`);
       } else {
           consecutiveNoGain++;
           setVal(consecutiveNoGainKey, consecutiveNoGain);
 
-          // 连续无积分保护
+          // 连续无积分保护逻辑
           if (consecutiveNoGain >= maxNoGainLimit) {
-              stopAutoSearch(`连续${consecutiveNoGain}次无积分，已停止保护。`);
-              return;
+              // 获取已尝试换页的次数
+              let retryCount = Number(getVal(`${prefix}RelayRetryCount`, 0)); // 使用动态变量名或直接写死 key 字符串
+
+              // 【修复逻辑】仅允许尝试换页 1 次
+              if (retryCount < 1) {
+                  console.log("[Rebang] 连续无分，尝试新建标签页激活...");
+
+                  setVal(`${prefix}RelayRetryCount`, retryCount + 1); // 增加重试计数
+                  setVal(consecutiveNoGainKey, 0); // 重要：归零无分计数，让新页面从0开始计算
+
+                  openNewWorkerTab(); // 执行移交
+                  return; // 退出当前页面的执行循环
+              }
+              // 如果已经换过一次页了，还是无分，说明是真没分了，停止。
+              else {
+                  setVal(`${prefix}RelayRetryCount`, 0); // 重置以便下次手动开始
+                  stopAutoSearch(`已尝试换页但仍连续${maxNoGainLimit}次无积分，判定为今日达赫或IP限制。`);
+                  return;
+              }
           }
       }
   }
@@ -659,6 +774,12 @@ function doAutoSearch() {
       stopAutoSearch("今日积分任务已达标！");
       return;
   }
+
+  // --- 确认为有效搜索，更新全局锁 (核心) ---
+  // 这会告诉其他标签页："我刚搜过，你们歇着"
+  setVal(globalLockKey, Date.now());
+  setVal(globalMasterTabKey, currentTabId);
+  // -------------------------------------
 
   // 设置下次搜索的随机延迟 (8-14秒)
   let randomDelay = Math.floor(Math.random() * 6000) + 8000;
@@ -786,8 +907,17 @@ function makeDraggable(elementId, handleId) {
     });
 }
 
-// 定时检查是否需要自动开始
+// 定时检查是否需要自动开始 (优化版：包含跨天自动刷新)
 function checkAutoStart() {
+    // === 新增逻辑：跨天检测 ===
+    // 如果当前日期不等于脚本加载时的日期，说明跨天了，强制刷新页面以唤醒脚本
+    if (getLocalDateStr() !== SCRIPT_LOAD_DATE) {
+        console.log("[Rebang] 检测到日期变更，执行跨天刷新...");
+        location.reload();
+        return;
+    }
+    // ========================
+
     // 1. 优先检查是否跨天（修复挂机不刷新页面导致不换榜的问题）
     let channelList = sessionStorage.getItem(channelListKey);
     if (channelList) {
@@ -807,9 +937,18 @@ function checkAutoStart() {
     if (getVal(triggeredKey, "false") === "true") return;
 
     let now = new Date();
-    // 检查时间是否到达
-    if (now.getHours() > startHour || (now.getHours() === startHour && now.getMinutes() >= startMin)) {
 
+    // === 优化逻辑：防止浏览器休眠导致的错过时间 ===
+    // 如果当前时间已经 超过了 设定时间（哪怕是几小时），只要今天还没跑过，就触发
+    // 比如设定 8:00，电脑休眠到 9:30 才打开，脚本也会立即执行
+    let isTimeReached = false;
+    if (now.getHours() > startHour) {
+        isTimeReached = true;
+    } else if (now.getHours() === startHour && now.getMinutes() >= startMin) {
+        isTimeReached = true;
+    }
+
+    if (isTimeReached) {
         let limit = Number($("#ext-autosearch-limit").val() ?? 50);
         let current = Number(getVal(getAutoSearchCountKey(), 0));
 
@@ -818,6 +957,7 @@ function checkAutoStart() {
              console.log(`[Rebang] Auto-start triggered. Time: ${now.toLocaleTimeString()}`);
              setVal(triggeredKey, "true");
 
+             // 模拟点击开始
              $("#ext-autosearch-lock").click();
         } else if (current >= limit) {
              // 如果已经完成了，也标记为已触发，防止重复尝试
@@ -969,9 +1109,9 @@ function initSearchControls() {
 
     // 加载榜单列表
     let channelList = sessionStorage.getItem(channelListKey);
-    if (channelList !== null) { 
+    if (channelList !== null) {
         let listArr = JSON.parse(channelList);
-        initChannels(listArr, getCurrentChannel()); 
+        initChannels(listArr, getCurrentChannel());
         checkAndRandomizeDailyChannel(listArr);
     }
     else {
@@ -1070,7 +1210,7 @@ function initSearchControls() {
 
         // 启动时将 lastPoints 设为 null，而不是当前分。
         // 这样第一次进入 doAutoSearch 时会跳过积分对比逻辑，避免"无分"误报。
-        setVal(lastPointsKey, null); 
+        setVal(lastPointsKey, null);
         // ===================
 
         doAutoSearch();
@@ -1079,7 +1219,7 @@ function initSearchControls() {
 }
 
 // ==========================================
-// 主入口 (Entry Point)
+// 主入口
 // ==========================================
 (function () {
   "use strict";
@@ -1087,14 +1227,19 @@ function initSearchControls() {
     // 1. 如果是 Rewards 页面
     if (location.hostname === "rewards.bing.com") {
         if ($("#rebang-widget").length == 0) initRewardsControls();
-        setInterval(handleRewardsPage, 3000); // 3秒检测一次，防止 DOM 未加载
-    } 
+        setInterval(handleRewardsPage, 3000);
+    }
     // 2. 如果是 搜索 页面
     else {
         if (window.top === window.self) {
           this.intervalId = this.intervalId || setInterval(function () {
               // 初始化悬浮窗
               if ($("#rebang-widget").length == 0) { initSearchControls(); }
+
+              // --- 周期性同步状态 (要求4) ---
+              // 检查我是否应该显示 UI，或者是否应该抢占主控权
+              syncTabStatus();
+              // --------------------------
 
               // 检查自动启动 (包含跨天检查)
               checkAutoStart();
