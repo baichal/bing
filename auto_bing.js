@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版)
-// @version      2025.12.19.14
-// @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化
+// @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版-全功能修复)
+// @version      2025.12.22.10
+// @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化。修复跨天不换榜问题。
 // @author       8969
 // @match        *://*.bing.com/search*
 // @match        https://rewards.bing.com/*
@@ -17,10 +17,13 @@
 // ==/UserScript==
 
 // 测试模式开关
-// 1: 开启测试模式。点击“开始”时，强制重置今日所有状态。
-// 0: 正常模式。智能判断是否已完成。
-const TEST_MODE = 0; 
+// 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
+// 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
+const TEST_MODE = 0;
 
+// ==========================================
+// 样式定义区 (UI)
+// ==========================================
 GM_addStyle(`
     #rebang-widget {
         position: fixed;
@@ -36,28 +39,40 @@ GM_addStyle(`
         flex-direction: column;
         overflow: hidden;
     }
+
+    /* === 适配系统级深色模式 === */
     @media (prefers-color-scheme: dark) {
-        #rebang-widget {
-            background-color: #2b2b2b;
-            border-color: #444;
-            color: #eee;
-        }
-        #rebang-header {
-            background-color: #3a3a3a !important;
-            border-bottom-color: #444 !important;
-        }
-        .keyword-link {
-            color: #bbb !important;
-        }
-        .keyword-link:hover {
-            color: #fff !important;
-        }
-        select, input {
-            background-color: #444;
-            color: #fff;
-            border: 1px solid #555;
-        }
+        #rebang-widget { background-color: #2b2b2b; border-color: #444; color: #eee; }
+        #rebang-header { background-color: #3a3a3a !important; border-bottom-color: #444 !important; }
+        .keyword-link { color: #bbb !important; }
+        .keyword-link:hover { color: #fff !important; }
+        #rebang-widget select, #rebang-widget input { background-color: #444; color: #fff; border: 1px solid #555; }
     }
+
+    /* === 适配 Bing 网页版强制深色模式 (类名 .b_dark) === */
+    .b_dark #rebang-widget {
+        background-color: #2b2b2b;
+        border-color: #444;
+        color: #eee;
+    }
+    .b_dark #rebang-header {
+        background-color: #3a3a3a !important;
+        border-bottom-color: #444 !important;
+    }
+    .b_dark #rebang-widget .keyword-link {
+        color: #bbb !important;
+    }
+    .b_dark #rebang-widget .keyword-link:hover {
+        color: #fff !important;
+    }
+    .b_dark #rebang-widget select, 
+    .b_dark #rebang-widget input {
+        background-color: #444;
+        color: #fff;
+        border: 1px solid #555;
+    }
+
+    /* === 通用组件样式 === */
     #rebang-header {
         padding: 10px 15px;
         background-color: #f8f9fa;
@@ -76,7 +91,7 @@ GM_addStyle(`
     #rebang-body.minimized { display: none; }
     .control-row { display: flex; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 5px; font-size: 12px; }
     .form-select { padding: 2px 5px; border-radius: 4px; border: 1px solid #ccc; max-width: 100px; font-size: 12px; }
-    .time-select { width: 45px; text-align: center; } 
+    .time-select { width: 45px; text-align: center; }
     button.rebang-btn { background: #0078d4; color: white; border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     button.rebang-btn:hover { background: #006abc; }
     button.rebang-btn.stop { background: #d9534f; }
@@ -92,67 +107,148 @@ GM_addStyle(`
 
 this.$ = this.jQuery = jQuery.noConflict(true);
 
-// === 跨域存储封装 ===
+// ==========================================
+// 工具函数与状态管理
+// ==========================================
+
+// GM_getValue / GM_setValue 封装
 function getVal(key, defaultValue) { return GM_getValue(key, defaultValue); }
 function setVal(key, value) { GM_setValue(key, value); }
 
+// 常量定义
 const prefix = "Rebang_";
-const autoSearchLockKey = `${prefix}AutoSearchLock`; 
-const enableDailyTasksKey = `${prefix}EnableDailyTasks`; 
-const maxNoGainLimitKey = `${prefix}MaxNoGainLimit`; 
-const dailyTaskMaxRetriesKey = `${prefix}DailyTaskMaxRetries`; 
-const autoSearchLockExpiresKey = `${prefix}AutoSearchLockExpires`; 
-const consecutiveNoGainKey = `${prefix}ConsecutiveNoGainCount`; 
-const lastPointsKey = `${prefix}LastPoints`; 
-const autoStartHourKey = `${prefix}AutoStartHour`;
-const autoStartMinKey = `${prefix}AutoStartMin`;
-const limitSearchCountKey = `${prefix}LimitSearchCount`;
+const autoSearchLockKey = `${prefix}AutoSearchLock`; // 搜索开关锁
+const enableDailyTasksKey = `${prefix}EnableDailyTasks`; // 是否启用每日任务
+const maxNoGainLimitKey = `${prefix}MaxNoGainLimit`; // 连续无积分熔断阈值
+const dailyTaskMaxRetriesKey = `${prefix}DailyTaskMaxRetries`; // 任务重试次数
+const autoSearchLockExpiresKey = `${prefix}AutoSearchLockExpires`; // 搜索冷却时间
+const consecutiveNoGainKey = `${prefix}ConsecutiveNoGainCount`; // 连续无积分计数
+const lastPointsKey = `${prefix}LastPoints`; // 上次记录的积分
+const autoStartHourKey = `${prefix}AutoStartHour`; // 自动开始小时
+const autoStartMinKey = `${prefix}AutoStartMin`; // 自动开始分钟
+const limitSearchCountKey = `${prefix}LimitSearchCount`; // 每日搜索限制
 
-// === 新增/修改的状态 Key ===
+// 状态 Key (用于跨标签页通信)
 const rewardsFailCountKey = `${prefix}RewardsFailCount`; // 积分页：连续未涨分计数
 const rewardsLastPointsKey = `${prefix}RewardsLastPoints`; // 积分页：上次点击时的积分
-
 const jumpFailCountKey = `${prefix}JumpFailCount`; // 搜索页：连续跳转无收益计数
 const jumpLastPointsKey = `${prefix}JumpLastPoints`; // 搜索页：上次跳转时的积分
+const rewardsClickTimeKey = `${prefix}RewardsClickTime`; // 任务点击时间戳
 
-const rewardsClickTimeKey = `${prefix}RewardsClickTime`; 
-const getDailyTaskRedirectTimeKey = () => `${prefix}DailyTaskRedirectTime`; 
+const selectedChannelKey = `${prefix}SelectedChannel`; // 当前选中的榜单
+const currentKeywordIndexKey = `${prefix}CurrentKeywordIndex`; // 当前搜索到第几个词
+const channelListKey = `${prefix}Channels`; // 榜单列表缓存
+const widgetPosKey = `${prefix}WidgetPosition`; // 悬浮窗位置
+const widgetStateKey = `${prefix}WidgetState`; // 悬浮窗折叠状态
 
-const selectedChannelKey = `${prefix}SelectedChannel`;
-const currentKeywordIndexKey = `${prefix}CurrentKeywordIndex`;
-const channelListKey = `${prefix}Channels`;
-const widgetPosKey = `${prefix}WidgetPosition`;
-const widgetStateKey = `${prefix}WidgetState`;
+// 动态 Key 生成函数
+const getDailyTaskRedirectTimeKey = () => `${prefix}DailyTaskRedirectTime`;
 
+// 【重要】获取本地日期字符串 (YYYY-MM-DD)
+// 解决了原版使用 UTC 时间导致早上 0-8 点判定为昨天的 bug
+function getLocalDateStr() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+// 每日动态 Key
 function getAutoSearchCountKey() {
-  return `${prefix}AutoSearchCount_${new Date().toISOString().split("T")[0]}`;
+  return `${prefix}AutoSearchCount_${getLocalDateStr()}`;
 }
 
 function getAutoStartTriggeredKey() {
-  return `${prefix}AutoStartTriggered_${new Date().toISOString().split("T")[0]}`;
+  return `${prefix}AutoStartTriggered_${getLocalDateStr()}`;
 }
 
 function getDailyTasksDoneKey() {
-  return `${prefix}DailyTasksDone_${new Date().toISOString().split("T")[0]}`;
+  return `${prefix}DailyTasksDone_${getLocalDateStr()}`;
 }
 
-// === 核心逻辑：获取当前积分 ===
+// ==========================================
+// 核心逻辑：获取积分 (深度修复版)
+// ==========================================
+
+// 辅助解析函数：安全解析积分文本
+function parsePointsText(text) {
+    if (!text) return null;
+    // 1. 去除逗号 (例如 "17,036" -> "17036")
+    let clean = text.replace(/,/g, '');
+    // 2. 提取第一组连续数字，忽略后续干扰字符
+    // 这一步能防止如果有漏网之鱼拼接到一起，只取前面的部分
+    let match = clean.match(/(\d+)/);
+    if (match) {
+        return parseInt(match[1], 10);
+    }
+    return null;
+}
+
+// 【搜索页面】专用逻辑 (完全复刻脚本2)
+function getSearchPagePoints() {
+    // 优先级 1: 脚本2 验证最有效的选择器 (.points-container)
+    let $pointsEl = $(".points-container");
+    if ($pointsEl.length > 0) {
+        // 必须使用 first() 防止多元素拼接
+        return parsePointsText($pointsEl.first().text());
+    }
+
+    // 优先级 2: 移动端/侧边栏 (备用)
+    let $sidebarPoints = $(".b_id_c .id_text"); 
+    if ($sidebarPoints.length > 0) {
+        return parsePointsText($sidebarPoints.first().text());
+    }
+
+    // 优先级 3: 旧版 ID (仅当确认为数字时返回)
+    let $oldId = $("#id_rc");
+    if ($oldId.length > 0) {
+        let txt = $oldId.text().trim();
+        if (txt && /\d/.test(txt)) return parsePointsText(txt);
+    }
+    
+    return null;
+}
+
+// 【Rewards页面】专用逻辑 (针对你提供的 HTML 结构修复)
+function getRewardsPagePoints() {
+    // 优先级 1: 【精确匹配】用户提供的 HTML 结构 (#balanceToolTipDiv)
+    // 结构: #balanceToolTipDiv -> .pointsValue -> span
+    let $userTarget = $("#balanceToolTipDiv .pointsValue span");
+    if ($userTarget.length > 0) {
+        // 关键修复：使用 .first() 确保只获取第一个匹配项，防止数值超出
+        return parsePointsText($userTarget.first().text());
+    }
+
+    // 优先级 2: 新版 Dashboard Header
+    let $header = $("dashboard-header").find("span.title-m, span.headline-m, .mee-icon-text span");
+    if ($header.length > 0) {
+        return parsePointsText($header.first().text());
+    }
+
+    // 优先级 3: 动画计数器 (必须加 .first() !!!)
+    // 之前的 bug 就是因为这里获取了页面所有计数器并拼接了
+    let $anim = $("mee-rewards-counter-animation span");
+    if ($anim.length > 0) {
+        return parsePointsText($anim.first().text());
+    }
+
+    // 优先级 4: 余额卡片兜底
+    let $balance = $("div[data-testid='balance-card'] h1, div[class*='balance'] span");
+    if ($balance.length > 0) {
+        return parsePointsText($balance.first().text());
+    }
+
+    return null;
+}
+
+// 主入口：严格分流，互不干扰
 function getBingPoints() {
-    let $searchPoints = $(".points-container");
-    if ($searchPoints.length > 0) {
-        let text = $searchPoints.text().trim();
-        let points = parseInt(text.replace(/,/g, ''), 10);
-        if (!isNaN(points)) return points;
+    if (window.location.hostname === "rewards.bing.com") {
+        return getRewardsPagePoints();
+    } else {
+        return getSearchPagePoints();
     }
-
-    let $rewardsPoints = $("#balanceToolTipDiv .pointsValue span");
-    if ($rewardsPoints.length > 0) {
-        let text = $rewardsPoints.text().trim();
-        let points = parseInt(text.replace(/,/g, ''), 10);
-        if (!isNaN(points)) return points;
-    }
-
-    return null; 
 }
 
 function stopAutoSearch(msg) {
@@ -161,10 +257,44 @@ function stopAutoSearch(msg) {
     if(msg) showUserMessage(msg);
 }
 
+// 【关键逻辑】每天随机切换榜单并清理旧缓存
+// 确保每天第一次运行时，或者挂机跨天时，自动换一个新榜单并获取最新数据
+function checkAndRandomizeDailyChannel(channelList) {
+    if (!channelList || channelList.length === 0) return;
+
+    const todayStr = getLocalDateStr(); // 获取本地日期
+    const lastSelectDate = localStorage.getItem(`${prefix}LastAutoSelectDate`); 
+
+    // 如果上次选择日期不是今天
+    if (lastSelectDate !== todayStr) {
+        console.log(`[Rebang] 检测到新的一天 (${todayStr})，正在随机选择榜单...`);
+
+        // 随机选一个榜单
+        const randomIndex = Math.floor(Math.random() * channelList.length);
+        const newChannel = channelList[randomIndex];
+
+        // 更新状态
+        localStorage.setItem(selectedChannelKey, newChannel);
+        localStorage.setItem(currentKeywordIndexKey, 0); 
+        localStorage.setItem(`${prefix}LastAutoSelectDate`, todayStr); 
+
+        // 强制清除 SessionStorage 中的旧缓存，迫使 initKeywords 重新请求最新数据
+        sessionStorage.removeItem(`${prefix}${newChannel}`); 
+        
+        // 更新 UI
+        $("#ext-channels").val(newChannel);
+        showUserMessage(`新的一天，已随机切换至: ${newChannel}`);
+        
+        // 重新初始化
+        initKeywords();
+    }
+}
+
+// 切换到下一个榜单 (当前榜单搜完时)
 function switchToNextChannel() {
     let channelList = JSON.parse(sessionStorage.getItem(channelListKey));
     let currentChannel = getCurrentChannel();
-    
+
     if (channelList && channelList.length > 0) {
         let currentIndex = channelList.indexOf(currentChannel);
         if (currentIndex !== -1 && currentIndex < channelList.length - 1) {
@@ -172,7 +302,7 @@ function switchToNextChannel() {
             showUserMessage(`本榜单已搜完，切换至: ${nextChannel}...`);
             localStorage.setItem(selectedChannelKey, nextChannel);
             localStorage.setItem(currentKeywordIndexKey, 0);
-            sessionStorage.removeItem(`${prefix}${nextChannel}`);
+            sessionStorage.removeItem(`${prefix}${nextChannel}`); // 清除缓存以防万一
             setTimeout(() => { location.reload(); }, 1000);
             return;
         }
@@ -197,21 +327,68 @@ function showUserMessage(msg) {
 }
 
 function doSearch(keyword) {
-  $("#sb_form_q").val(keyword);
-  $("#sb_form_go").click();
+    // 1. 尝试使用脚本 2 的逻辑：模拟点击搜索按钮
+    // 这样 Bing 会自动添加 &form=QBRE, &cvid=... 等关键参数
+    let $input = $("#sb_form_q");
+    let $btn = $("#sb_form_go"); // 桌面端常用 ID
+
+    // 兼容性查找按钮
+    if ($btn.length === 0) $btn = $("#sb_form_submit"); // 移动端或旧版
+    if ($btn.length === 0) $btn = $(".search_icon, .b_searchboxSubmit"); // 通用类名
+
+    if ($input.length > 0 && $btn.length > 0) {
+        // 填入关键词
+        $input.val(keyword);
+        
+        // 触发 React/Angular 等框架可能需要的 input 事件
+        try {
+            let evt = new Event('input', { bubbles: true });
+            $input[0].dispatchEvent(evt);
+            $input[0].value = keyword; //再一次确保赋值
+        } catch(e) {}
+
+        // 模拟点击
+        $btn[0].click();
+    } 
+    else {
+        // 2. 兜底方案：如果找不到按钮，手动构建带参数的 URL
+        // &form=QBRE 是 Bing 判断是否为“手动搜索”的核心参数
+        window.location.href = "https://www.bing.com/search?q=" + encodeURIComponent(keyword) + "&form=QBRE&sp=-1&lq=0";
+    }
 }
 
-// === Rewards 页面逻辑 (基于积分变化重试) ===
+// ==========================================
+// 每日任务黑名单管理 (跳过卡住的任务)
+// ==========================================
+function getTaskBlacklistKey() {
+    return `${prefix}TaskBlacklist_${getLocalDateStr()}`;
+}
+
+function getTaskBlacklist() {
+    return JSON.parse(getVal(getTaskBlacklistKey(), "[]"));
+}
+
+function addTaskToBlacklist(url) {
+    let list = getTaskBlacklist();
+    if (url && !list.includes(url)) {
+        list.push(url);
+        setVal(getTaskBlacklistKey(), JSON.stringify(list));
+    }
+}
+
+// ==========================================
+// 页面逻辑：Rewards 任务页
+// ==========================================
 function handleRewardsPage() {
     let isLocked = getVal(autoSearchLockKey, "off");
     let currentPoints = getBingPoints();
     
-    // 更新悬浮窗
     if (currentPoints !== null) {
         $("#ext-rewards-points").text(currentPoints);
         setVal(lastPointsKey, currentPoints); 
     }
 
+    // 如果脚本未开启，不执行任何操作
     if (isLocked !== "on") {
          showUserMessage("脚本未开启");
          return;
@@ -229,10 +406,10 @@ function handleRewardsPage() {
         return; 
     }
 
-    // === 1. 检查是否处于“点击后等待”状态 ===
+    // 检测是否处于点击后的冷却期
     let lastClickTime = Number(getVal(rewardsClickTimeKey, 0));
     let now = new Date().getTime();
-    let waitDuration = 15000; // 等待15秒
+    let waitDuration = 10000; // 每次点击后等待 10 秒验证
 
     if (now - lastClickTime < waitDuration) {
         let left = Math.ceil((waitDuration - (now - lastClickTime)) / 1000);
@@ -246,189 +423,169 @@ function handleRewardsPage() {
         return; 
     }
 
-    // === 2. 积分变化检测 (关键逻辑) ===
-    let rewardsLastPoints = Number(getVal(rewardsLastPointsKey, -1)); // 默认-1表示首次进入
+    // 状态准备
+    let rewardsLastPoints = Number(getVal(rewardsLastPointsKey, -1));
     let failCount = Number(getVal(rewardsFailCountKey, 0));
     let maxRetries = Number(getVal(dailyTaskMaxRetriesKey, 3));
+    let blacklist = getTaskBlacklist(); 
 
-    // 如果不是首次检测（lastPoints != -1），则对比积分
-    if (rewardsLastPoints !== -1 && currentPoints !== null) {
-        // 我们只在“点击操作刷新回来后”且“不在等待期”时才进行这个判断
-        // 为了避免页面刚加载时的误判，这里需要配合 rewardsClickTimeKey 为 0 来判断
-        // 但这里简化：只要 handleRewardsPage 正常执行，说明刷新完成了
-        
-        // 注意：这里需要一个标志位，表明“刚刚进行了一次点击”。
-        // 但为了简单，我们对比：如果积分涨了 -> 重置 FailCount
-        if (currentPoints > rewardsLastPoints) {
-            if (failCount > 0) console.log(`[Rebang] Points increased! Reset fail count.`);
-            failCount = 0;
-            setVal(rewardsFailCountKey, 0);
-        } else {
-            // 积分没涨。
-            // 这里有一个问题：如果只是刚进页面还没点，积分当然没涨。
-            // 所以，必须是“执行了点击”之后才算。
-            // 现在的逻辑是：点击 -> 记录时间 -> 刷新 -> 回到这里。
-            // 所以，如果 now - lastClickTime > waitDuration (即上面的if没进去)，说明是刷新回来了。
-            // 但是，如果是刚打开页面呢？ lastClickTime 是 0。
-            // 只有当 lastClickTime 曾经被设置过（>0）且现在归零了？ 不太好判断。
-            
-            // 改进：在点击动作发生时，记录 rewardsLastPoints。
-            // 只有在点击时，才把“旧积分”存入 rewardsLastPointsKey。
-            // 这样，当页面刷新回来，currentPoints 对比的就是“点击前”的积分。
-            // 如果没涨，说明上次点击无效。
-            
-            // 下面的逻辑移到点击动作里去设置 baseline。
-            // 这里只负责读取结果：
-            // 但怎么知道是“点击后回来”还是“刚进来”？
-            // 我们可以利用一个 flag: Rebang_IsCheckingResult
-        }
-    }
-
-    // === 3. 熔断检测 ===
-    if (failCount > maxRetries) {
-        console.log(`[Rebang] Task No-Gain limit (${failCount}) reached. Skipping.`);
-        showUserMessage(`连续${failCount}次无分，跳过...`);
-        setVal(getDailyTasksDoneKey(), true);
-        setTimeout(() => {
-            window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Skip";
-        }, 1500);
-        return;
-    }
-
-    // === 4. 查找并执行任务 ===
+    // 寻找未完成的任务
     let $cards = $("#more-activities mee-card");
     let hasPending = false;
     let targetLink = null;
     let targetName = "";
+    let targetUrl = "";
 
     $cards.each(function() {
         if (targetLink) return; 
 
         let $icon = $(this).find(".mee-icon-SkypeCircleCheck");
-        if ($icon.length === 0) {
+        
+        if ($icon.length === 0) { // 没有绿色勾勾
             let $link = $(this).find("a");
             if ($link.length > 0) {
+                let url = $link.attr("href");
+                
+                // 跳过黑名单
+                if (blacklist.includes(url)) {
+                    return; 
+                }
+
                 hasPending = true;
                 targetLink = $link;
                 targetName = $link.text().trim() || "任务";
+                targetUrl = url;
             }
         }
     });
 
-    if (hasPending && targetLink) {
-        // === 核心：点击前逻辑 ===
-        // 1. 检查上次点击是否有收益 (如果这不是第一次点击)
-        // 逻辑：如果 rewardsLastPoints 有值，且 currentPoints == rewardsLastPoints，说明上次白点了
-        if (rewardsLastPoints !== -1 && currentPoints !== null) {
-             if (currentPoints > rewardsLastPoints) {
-                 failCount = 0; // 涨分了，重置
-                 setVal(rewardsFailCountKey, 0);
-             } else {
-                 failCount++; // 没涨，记一过
-                 setVal(rewardsFailCountKey, failCount);
-             }
-        }
-        
-        // 2. 再次检查熔断 (因为 failCount 刚可能增加了)
-        if (failCount > maxRetries) {
-            showUserMessage(`无分重试(${failCount})超限，跳过`);
-            setVal(getDailyTasksDoneKey(), true);
-            setTimeout(() => { window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Skip"; }, 1000);
-            return;
-        }
+    // 积分验证逻辑：如果积分涨了，重置失败计数
+    if (rewardsLastPoints !== -1 && currentPoints !== null) {
+        if (currentPoints > rewardsLastPoints) {
+            if (failCount > 0) console.log(`[Rebang] Points increased! Reset fail count.`);
+            failCount = 0;
+            setVal(rewardsFailCountKey, 0);
+        } 
+    }
 
-        // 3. 执行本次点击
-        showUserMessage(`执行: ${truncateText(targetName, 8)} (失误:${failCount})`);
+    // 熔断逻辑：单任务失败次数过多
+    if (hasPending && targetLink && failCount > maxRetries) {
+        console.log(`[Rebang] Task limit (${failCount}) reached for: ${targetName}`);
+        showUserMessage(`任务[${truncateText(targetName,6)}]多次无分，拉黑跳过...`);
         
-        // 记录当前积分作为“下一次的基准”
-        if (currentPoints !== null) setVal(rewardsLastPointsKey, currentPoints);
-        
-        setVal(rewardsClickTimeKey, now); // 开启等待计时
-
-        targetLink[0].click();
-        
-    } else if (!hasPending && $cards.length > 0) {
-        console.log("[Rebang] Daily tasks done.");
+        addTaskToBlacklist(targetUrl); // 加入黑名单
+        setVal(rewardsFailCountKey, 0); // 重置计数
+        setTimeout(() => { location.reload(); }, 1500); // 刷新页面
+        return;
+    }
+    
+    // 所有任务完成或被跳过
+    if (!hasPending && $cards.length > 0) {
+        console.log("[Rebang] Daily tasks done (or all skipped).");
         setVal(getDailyTasksDoneKey(), true);
-        showUserMessage("任务全清！返回搜索...");
+        showUserMessage("任务完成(或已跳过卡住任务)！返回...");
         setTimeout(() => {
             window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Done";
         }, 1500);
+        return;
+    }
+
+    // 执行点击
+    if (hasPending && targetLink) {
+        // 预判失败：如果不是第一次点击且积分没涨，先记一次失败
+        if (rewardsLastPoints !== -1 && currentPoints !== null && currentPoints <= rewardsLastPoints) {
+             failCount++; 
+             setVal(rewardsFailCountKey, failCount);
+             
+             if (failCount > maxRetries) {
+                 showUserMessage(`重试超限，准备跳过...`);
+                 location.reload(); 
+                 return;
+             }
+        } else if (currentPoints > rewardsLastPoints) {
+            failCount = 0;
+            setVal(rewardsFailCountKey, 0);
+        }
+
+        showUserMessage(`执行: ${truncateText(targetName, 8)} (失误:${failCount})`);
+        
+        if (currentPoints !== null) setVal(rewardsLastPointsKey, currentPoints);
+        
+        setVal(rewardsClickTimeKey, now); 
+        targetLink[0].click();
     }
 }
 
+// ==========================================
+// 页面逻辑：Bing 搜索页
+// ==========================================
 function doAutoSearch() {
   let enableDaily = getVal(enableDailyTasksKey, false);
   let dailyDone = getVal(getDailyTasksDoneKey(), false);
 
-  // === 每日任务跳转逻辑 (基于积分变化) ===
+  // 1. 每日任务跳转逻辑 (优先执行)
   if (enableDaily && !dailyDone) {
       let lastRedirect = Number(getVal(getDailyTaskRedirectTimeKey(), 0));
       let nowTime = new Date().getTime();
-      
-      // 冷却时间
+
+      // 任务页跳转冷却 (60秒)
       if (nowTime - lastRedirect < 60 * 1000) {
           let waitSec = Math.ceil((60000 - (nowTime - lastRedirect)) / 1000);
           showUserMessage(`等待任务页冷却... ${waitSec}s`);
-          return; 
+          return;
       }
 
-      // 获取当前状态
       let currentPoints = getBingPoints();
       let jumpLastPoints = Number(getVal(jumpLastPointsKey, -1));
       let jumpFailCount = Number(getVal(jumpFailCountKey, 0));
-      
-      // UI配置的重试次数
+
       let uiMaxRetries = $("#ext-daily-retries").length ? Number($("#ext-daily-retries").val()) : -1;
       let maxRetries = uiMaxRetries >= 0 ? uiMaxRetries : Number(getVal(dailyTaskMaxRetriesKey, 3));
 
-      // 判定上次跳转是否有效
+      // 验证上次跳转是否有收益
       if (jumpLastPoints !== -1 && currentPoints !== null) {
           if (currentPoints > jumpLastPoints) {
-              // 涨分了！说明上次跳转是有意义的
               jumpFailCount = 0;
               setVal(jumpFailCountKey, 0);
           } else {
-              // 没涨分，说明上次白跑了
               jumpFailCount++;
               setVal(jumpFailCountKey, jumpFailCount);
           }
       }
 
-      // 熔断检测
+      // 跳转失败过多，放弃任务
       if (jumpFailCount > maxRetries) {
           showUserMessage(`无分跳转(${jumpFailCount}次)超限，跳过`);
-          setVal(getDailyTasksDoneKey(), true); 
-          return; 
+          setVal(getDailyTasksDoneKey(), true);
+          return;
       }
 
-      // 准备跳转
       showUserMessage(`前往任务页 (无分次数:${jumpFailCount})...`);
-      
-      // 记录状态
-      if (currentPoints !== null) setVal(jumpLastPointsKey, currentPoints); // 记录当前积分为基准
+
+      if (currentPoints !== null) setVal(jumpLastPointsKey, currentPoints); 
       setVal(getDailyTaskRedirectTimeKey(), nowTime);
-      setVal(rewardsClickTimeKey, 0); 
-      // 注意：进入积分页时，把积分页内部的基准积分重置，防止误判
-      setVal(rewardsLastPointsKey, -1); 
+      setVal(rewardsClickTimeKey, 0);
+      setVal(rewardsLastPointsKey, -1);
       setVal(rewardsFailCountKey, 0);
 
       setTimeout(() => {
           window.location.href = "https://rewards.bing.com/";
       }, 1000);
-      return; 
+      return;
   }
 
-  // === 搜索刷分逻辑 ===
+  // 2. 搜索刷分主逻辑
   let currentPoints = getBingPoints();
   if (currentPoints === null) {
-      if (document.readyState === 'complete') { currentPoints = 0; } 
+      // 如果完全加载了还没分，可能是0分或者获取失败，暂且当作0
+      if (document.readyState === 'complete') { currentPoints = 0; }
       else { return; }
   }
 
+  // 搜索冷却时间检查
   let jobLockExpires = getVal(autoSearchLockExpiresKey, "");
   let now = new Date();
-  
+
   if (jobLockExpires) {
       let expireTime = new Date(jobLockExpires);
       if (expireTime > now) {
@@ -439,12 +596,13 @@ function doAutoSearch() {
   }
 
   let lastPoints = getVal(lastPointsKey, null);
-  let currentSearchCount = Number(getVal(getAutoSearchCountKey(), 0)); 
+  let currentSearchCount = Number(getVal(getAutoSearchCountKey(), 0));
   let isPointsIncreased = false;
-  
+
   let maxNoGainLimit = Number(getVal(maxNoGainLimitKey, 10));
   let consecutiveNoGain = Number(getVal(consecutiveNoGainKey, 0));
 
+  // 积分对比
   if (lastPoints !== null) {
       let lastP = Number(lastPoints);
       if (currentPoints > lastP) {
@@ -456,28 +614,32 @@ function doAutoSearch() {
       } else {
           consecutiveNoGain++;
           setVal(consecutiveNoGainKey, consecutiveNoGain);
-          
+
+          // 连续无积分保护
           if (consecutiveNoGain >= maxNoGainLimit) {
               stopAutoSearch(`连续${consecutiveNoGain}次无积分，已停止保护。`);
-              return; 
+              return;
           }
       }
   }
-  
+
   $("#ext-current-count").text(currentSearchCount);
 
+  // 每日搜索次数限制
   let limitSearchCount = Number(getVal(limitSearchCountKey, 50));
   if (currentSearchCount >= limitSearchCount) {
-      setVal(lastPointsKey, null); 
+      setVal(lastPointsKey, null);
       stopAutoSearch("今日积分任务已达标！");
       return;
   }
 
-  let randomDelay = Math.floor(Math.random() * 6000) + 8000; 
+  // 设置下次搜索的随机延迟 (8-14秒)
+  let randomDelay = Math.floor(Math.random() * 6000) + 8000;
   let t = new Date();
   t.setSeconds(t.getSeconds() + randomDelay / 1000);
-  setVal(autoSearchLockExpiresKey, t.toString()); 
+  setVal(autoSearchLockExpiresKey, t.toString());
 
+  // 获取关键词并执行搜索
   let currentKeywordIndex = Number(localStorage.getItem(currentKeywordIndexKey) ?? 0);
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = JSON.parse(sessionStorage.getItem(cacheKey));
@@ -490,9 +652,10 @@ function doAutoSearch() {
 
     let msg = isPointsIncreased ? `积分+${currentPoints - Number(lastPoints)}! ` : (lastPoints !== null ? `无分(${consecutiveNoGain}/${maxNoGainLimit}). ` : "");
     showUserMessage(`${msg}搜索: ${truncateText(keywords[currentKeywordIndex - 1].title, 15)}`);
-    
+
     doSearch(keywords[currentKeywordIndex - 1].title);
   } else {
+    // 如果没有关键词或搜完了
     if (!keywords) {
         initKeywords();
     } else {
@@ -501,6 +664,7 @@ function doAutoSearch() {
   }
 }
 
+// 初始化榜单下拉框
 function initChannels(channels, selectedChannel) {
   $("#ext-channels").empty();
   channels?.forEach(function (element) {
@@ -514,6 +678,7 @@ function initChannels(channels, selectedChannel) {
   initKeywords();
 }
 
+// 初始化/获取关键词 (从 API)
 function initKeywords() {
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = sessionStorage.getItem(cacheKey);
@@ -538,10 +703,11 @@ function initKeywords() {
   }
 }
 
+// 渲染关键词列表到悬浮窗
 function renderKeywords(keywords) {
   $("#ext-keywords-list").empty();
   let currentIndex = Number(localStorage.getItem(currentKeywordIndexKey) ?? 0);
-  
+
   keywords.forEach(function (element, index) {
     let activeClass = (index + 1 === currentIndex) ? "keyword-link-current" : "";
     let linkHtml = "";
@@ -556,6 +722,7 @@ function renderKeywords(keywords) {
   $("#ext-keywords-list .keyword-link-search").click(function (e) { doSearch($(this).attr("title")); });
 }
 
+// 恢复悬浮窗位置
 function restoreWidgetPosition() {
     const pos = JSON.parse(localStorage.getItem(widgetPosKey));
     if (pos) { $("#rebang-widget").css({ top: pos.top, left: pos.left, right: 'auto', bottom: 'auto' }); }
@@ -566,6 +733,7 @@ function restoreWidgetPosition() {
     else { $("#rebang-toggle-icon").text("−"); }
 }
 
+// 拖拽功能实现
 function makeDraggable(elementId, handleId) {
     const el = document.getElementById(elementId);
     if(!el) return;
@@ -591,10 +759,18 @@ function makeDraggable(elementId, handleId) {
     });
 }
 
+// 定时检查是否需要自动开始
 function checkAutoStart() {
+    // 1. 优先检查是否跨天（修复挂机不刷新页面导致不换榜的问题）
+    let channelList = sessionStorage.getItem(channelListKey);
+    if (channelList) {
+        checkAndRandomizeDailyChannel(JSON.parse(channelList));
+    }
+
+    // 2. 检查定时启动逻辑
     let startHourStr = getVal(autoStartHourKey, "-1");
     let startMinStr = getVal(autoStartMinKey, "-1");
-    
+
     let startHour = parseInt(startHourStr, 10);
     let startMin = parseInt(startMinStr, 10);
 
@@ -604,23 +780,26 @@ function checkAutoStart() {
     if (getVal(triggeredKey, "false") === "true") return;
 
     let now = new Date();
+    // 检查时间是否到达
     if (now.getHours() > startHour || (now.getHours() === startHour && now.getMinutes() >= startMin)) {
-        
+
         let limit = Number($("#ext-autosearch-limit").val() ?? 50);
         let current = Number(getVal(getAutoSearchCountKey(), 0));
-        
+
+        // 如果还没开始搜，且还没达到今日上限 -> 自动点击开始
         if (getVal(autoSearchLockKey, "off") !== "on" && current < limit) {
-             let niceMin = startMin < 10 ? '0'+startMin : startMin;
              console.log(`[Rebang] Auto-start triggered. Time: ${now.toLocaleTimeString()}`);
-             setVal(triggeredKey, "true"); 
-             
-             $("#ext-autosearch-lock").click(); 
+             setVal(triggeredKey, "true");
+
+             $("#ext-autosearch-lock").click();
         } else if (current >= limit) {
+             // 如果已经完成了，也标记为已触发，防止重复尝试
              setVal(triggeredKey, "true");
         }
     }
 }
 
+// 生成时间选择下拉框HTML
 function getHourOptionsHtml(selected) {
     let html = "<option value='-1'>--</option>";
     for(let i=0; i<24; i++) {
@@ -640,7 +819,9 @@ function getMinOptionsHtml(selected) {
     return html;
 }
 
-// === Rewards 页面专用悬浮窗 ===
+// ==========================================
+// 初始化 UI：Rewards 页
+// ==========================================
 function initRewardsControls() {
     if ($("#rebang-widget").length > 0) return;
 
@@ -674,7 +855,7 @@ function initRewardsControls() {
     });
 
     $("#ext-stop-rewards").click(function() {
-        setVal(autoSearchLockKey, "off"); 
+        setVal(autoSearchLockKey, "off");
         showUserMessage("已停止，即将返回...");
         setTimeout(() => {
             window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Stopped";
@@ -682,16 +863,18 @@ function initRewardsControls() {
     });
 }
 
-// === Bing 搜索页面专用悬浮窗 ===
+// ==========================================
+// 初始化 UI：搜索页
+// ==========================================
 function initSearchControls() {
-  if (window.top !== window.self) return;
+  if (window.top !== window.self) return; // 不在 iframe 中运行
   $("#rebang").remove(); $("#rebang-widget").remove();
 
   if ($("#rebang-widget").length == 0) {
     let savedHour = getVal(autoStartHourKey, "-1");
     let savedMin = getVal(autoStartMinKey, "-1");
     let savedMaxNoGain = getVal(maxNoGainLimitKey, "10");
-    let savedDailyRetries = getVal(dailyTaskMaxRetriesKey, "3"); 
+    let savedDailyRetries = getVal(dailyTaskMaxRetriesKey, "3");
     let enableDailyTasks = getVal(enableDailyTasksKey, false);
 
     const widgetHtml = `
@@ -726,7 +909,7 @@ function initSearchControls() {
                 <label>次</label>
                 <button id='ext-autosearch-lock' class='rebang-btn' type='button' style='margin-left:auto;'>开始</button>
             </div>
-            
+
             <div class='control-row' style='background:#f0f0f0; padding:5px; border-radius:4px;'>
                  <label>自动:</label>
                  <select id='ext-autostart-hour' class='form-select time-select'>${getHourOptionsHtml(savedHour)}</select>
@@ -734,7 +917,7 @@ function initSearchControls() {
                  <select id='ext-autostart-min' class='form-select time-select'>${getMinOptionsHtml(savedMin)}</select>
                  <button id='ext-save-autostart' class='rebang-btn save' type='button'>设置</button>
             </div>
-            
+
             <div class='control-row'>
                  <label>失败停:</label>
                  <input type='number' id='ext-max-nogain' style='width:40px;text-align:center;border:1px solid #ccc;border-radius:4px;' value='${savedMaxNoGain}'>
@@ -756,19 +939,27 @@ function initSearchControls() {
         else { body.addClass("minimized"); $(this).text("+"); localStorage.setItem(widgetStateKey, 'true'); }
     });
 
+    // 加载榜单列表
     let channelList = sessionStorage.getItem(channelListKey);
-    if (channelList !== null) { initChannels(JSON.parse(channelList), getCurrentChannel()); }
+    if (channelList !== null) { 
+        let listArr = JSON.parse(channelList);
+        initChannels(listArr, getCurrentChannel()); 
+        // 关键：检查是否需要跨天切换
+        checkAndRandomizeDailyChannel(listArr);
+    }
     else {
       $.ajax({ url: "https://api.pearktrue.cn/api/dailyhot", method: "GET", timeout: 0 }).done(function (response) {
         if (response.code == 200 && response.data && response.data.platforms) {
           sessionStorage.setItem(channelListKey, JSON.stringify(response.data.platforms));
           initChannels(response.data.platforms, getCurrentChannel());
+          // 关键：检查是否需要跨天切换
+          checkAndRandomizeDailyChannel(response.data.platforms);
         } else { showUserMessage(`获取热榜频道失败。`); }
       });
     }
   }
 
-  // 页面加载时，如果在停止状态，强制重置计数器
+  // 页面加载时，如果在停止状态，强制重置部分计数器
   if (getVal(autoSearchLockKey, "off") == "off") {
       setVal(jumpFailCountKey, 0);
       setVal(rewardsFailCountKey, 0);
@@ -776,7 +967,7 @@ function initSearchControls() {
 
   let currentSearchCount = Number(getVal(getAutoSearchCountKey(), 0));
   let limitSearchCount = Number(getVal(limitSearchCountKey, 50));
-  
+
   $("#ext-current-count").text(currentSearchCount);
   $("#ext-autosearch-limit").val(limitSearchCount);
 
@@ -785,21 +976,22 @@ function initSearchControls() {
   if (getVal(autoSearchLockKey, "off") == "on") { $("#ext-autosearch-lock").text("停止").addClass("stop"); }
   else { $("#ext-autosearch-lock").text("开始").removeClass("stop"); }
 
+  // 事件绑定
   $("#ext-channels").change(function (e) { localStorage.setItem(selectedChannelKey, $(this).val()); localStorage.setItem(currentKeywordIndexKey, 0); initKeywords(); });
   $("#ext-keywords-linktype").change(function (e) { initKeywords(); });
   $("#ext-autosearch-limit").change(function (e) { setVal(limitSearchCountKey, $(this).val()); });
   $("#ext-keywords-refresh").click(function (e) { sessionStorage.removeItem(getCurrentChannelKeywordsCacheKey()); initKeywords(); });
-  
+
   $("#ext-max-nogain").change(function(e) { setVal(maxNoGainLimitKey, $(this).val()); });
   $("#ext-enable-dailytasks").change(function(e) { setVal(enableDailyTasksKey, $(this).is(':checked')); });
   $("#ext-daily-retries").change(function(e) { setVal(dailyTaskMaxRetriesKey, $(this).val()); });
 
-  $("#ext-save-autostart").click(function(e) { 
+  $("#ext-save-autostart").click(function(e) {
       let h = $("#ext-autostart-hour").val();
       let m = $("#ext-autostart-min").val();
       setVal(autoStartHourKey, h);
       setVal(autoStartMinKey, m);
-      setVal(getAutoStartTriggeredKey(), "false"); 
+      setVal(getAutoStartTriggeredKey(), "false");
 
       if(h === "-1" || m === "-1") {
           showUserMessage("已关闭自动启动");
@@ -808,12 +1000,15 @@ function initSearchControls() {
       }
   });
 
+  // 点击“开始/停止”按钮
   $("#ext-autosearch-lock").click(function (e) {
     if (getVal(autoSearchLockKey, "off") == "on") {
       stopAutoSearch("自动搜索已停止");
     } else {
+        // 保存设置
         if ($("#ext-daily-retries").length) setVal(dailyTaskMaxRetriesKey, $("#ext-daily-retries").val());
 
+        // 逻辑判断
         if (TEST_MODE === 0) {
             let limit = Number($("#ext-autosearch-limit").val());
             let current = Number(getVal(getAutoSearchCountKey(), 0));
@@ -824,54 +1019,63 @@ function initSearchControls() {
                 showUserMessage("今日任务已全部完成！");
                 return;
             }
-        } 
+        }
         else if (TEST_MODE === 1) {
+            // 测试模式：强制重置状态
             setVal(getDailyTasksDoneKey(), false);
             setVal(rewardsFailCountKey, 0);
             setVal(getDailyTaskRedirectTimeKey(), 0);
-            setVal(jumpFailCountKey, 0); 
-            
-            setVal(getAutoSearchCountKey(), 0); 
+            setVal(jumpFailCountKey, 0);
+
+            setVal(getAutoSearchCountKey(), 0);
             showUserMessage("测试模式: 强制重置状态...");
         }
 
         setVal(autoSearchLockKey, "on");
-        setVal(consecutiveNoGainKey, 0); 
-        
-        // 点击开始，重置今日跳转计数
-        setVal(jumpFailCountKey, 0); 
+        setVal(consecutiveNoGainKey, 0);
+
+        setVal(jumpFailCountKey, 0);
         setVal(jumpLastPointsKey, -1);
         setVal(rewardsFailCountKey, 0);
-        
+
         $(this).text("停止").addClass("stop");
         showUserMessage("初始化中...");
-        setVal(autoSearchLockExpiresKey, ""); 
-        
+        setVal(autoSearchLockExpiresKey, "");
+
         let p = getBingPoints();
         if(p !== null) setVal(lastPointsKey, p);
-        
+
         doAutoSearch();
     }
   });
 }
 
+// ==========================================
+// 主入口 (Entry Point)
+// ==========================================
 (function () {
   "use strict";
   $(document).ready(function () {
+    // 1. 如果是 Rewards 页面
     if (location.hostname === "rewards.bing.com") {
         if ($("#rebang-widget").length == 0) initRewardsControls();
-        setInterval(handleRewardsPage, 2000); 
-    } else {
+        setInterval(handleRewardsPage, 3000); // 3秒检测一次，防止 DOM 未加载
+    } 
+    // 2. 如果是 搜索 页面
+    else {
         if (window.top === window.self) {
           this.intervalId = this.intervalId || setInterval(function () {
+              // 初始化悬浮窗
               if ($("#rebang-widget").length == 0) { initSearchControls(); }
-              
+
+              // 检查自动启动 (包含跨天检查)
               checkAutoStart();
 
+              // 如果开关开启，执行搜索循环
               if ($("#ext-autosearch-limit").val() && $("#ext-autosearch-limit").val().trim() != "" && getVal(autoSearchLockKey, "off") == "on") {
                  doAutoSearch();
               }
-            }, 1000);
+            }, 1000); // 1秒心跳
         }
     }
   });
