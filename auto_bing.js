@@ -185,6 +185,49 @@ function syncTabStatus() {
         console.log(`[Rebang] tab ${currentTabId} took over master control.`);
     }
 
+// ==========================================
+// 标签页状态同步函数
+// ==========================================
+// 用于判断当前标签页是否应该显示UI或执行任务
+function syncTabStatus() {
+    // 获取全局最后执行时间
+    let lastRun = Number(getVal(globalLockKey, 0));
+    let masterId = getVal(globalMasterTabKey, "");
+    let now = Date.now();
+
+    // 判定主控权逻辑：
+    let isMaster = false;
+    if (masterId === currentTabId) {
+        isMaster = true;
+    } else if (now - lastRun > 20000) { 
+        // 【修复】将超时抢占时间从 15000 改为 20000 (20秒)
+        // 因为最大随机延迟是14秒，15秒太极限了，容易导致主控还在跑就被抢走。
+        setVal(globalMasterTabKey, currentTabId);
+        setVal(globalLockKey, now);
+        isMaster = true;
+        console.log(`[Rebang] tab ${currentTabId} took over master control.`);
+    }
+
+    // === 【核心修改点】 ===
+    // 移除之前的 .hide() 逻辑，改为所有页面常驻显示
+    if ($("#rebang-widget").length > 0) {
+        $("#rebang-widget").show(); // 强制显示
+
+        if (isMaster) {
+            // 如果是主控页，正常显示
+            $("#rebang-title").text("🔥 必应积分助手 (主控)");
+            $("#rebang-widget").css("opacity", "1"); // 完全不透明
+        } else {
+            // 如果是副页面，也显示，但标题提示“待机”
+            // 这样你就可以在任何页面修改设置了
+            $("#rebang-title").text("💤 必应积分助手 (待机)");
+            $("#rebang-widget").css("opacity", "0.85"); // 稍微透明一点点以示区分
+        }
+    }
+
+    return isMaster;
+}
+
     // === 【核心修改点】 ===
     // 移除之前的 .hide() 逻辑，改为所有页面常驻显示
     if ($("#rebang-widget").length > 0) {
@@ -632,10 +675,13 @@ function doAutoSearch() {
   let nowTime = Date.now();
   const relayRetryKey = `${prefix}RelayRetryCount`; // 换页重试计数
 
-
-  // 如果我不是主控，且上次全局执行在 8秒内 (正常搜索间隔是8-14秒)，则我保持静默
-  if (!isMaster && (nowTime - lastGlobalRun < 8000)) {
-      console.log(`[Rebang] Slave tab standby. Master running.`);
+  // 【核心修复逻辑】
+  // 原代码是: if (!isMaster && (nowTime - lastGlobalRun < 8000)) { ... }
+  // 这意味着如果主控休息了9秒（但他还在正常等待中），副页面就会抢走执行权。
+  // 修改后：只要 isMaster 为 false，说明 syncTabStatus 认为主控还活着（没超过20秒），
+  // 那么我就绝对不动，老老实实待机，实现“固定主控”。
+  if (!isMaster) {
+      console.log(`[Rebang] Slave tab standby. Waiting for Master.`);
       return;
   }
   // -----------------------------------
