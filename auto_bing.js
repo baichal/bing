@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版-全功能修复)
-// @version      2025.12.23.2
+// @version      2025.12.23.3
 // @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化。修复跨天不换榜问题。
 // @author       8969
 // @match        *://*.bing.com/search*
@@ -321,6 +321,58 @@ function getAutoStartTriggeredKey() {
 
 function getDailyTasksDoneKey() {
   return `${prefix}DailyTasksDone_${getLocalDateStr()}`;
+}
+
+// ==========================================
+// 【新增优化】防休眠与死页自动复活模块
+// 解决浏览器后台冻结页面导致定时任务失效的问题
+// ==========================================
+function initAntiSleepProtection() {
+    console.log("[Rebang] 启动防休眠保护系统...");
+
+    // 1. 申请屏幕唤醒锁 (降低被浏览器判定为闲置的概率)
+    if ('wakeLock' in navigator) {
+        try {
+            navigator.wakeLock.request('screen').then(lock => {
+                console.log("[Rebang] 屏幕唤醒锁已获取 (Screen WakeLock Active)");
+                lock.addEventListener('release', () => {
+                    console.log('[Rebang] 唤醒锁被释放，正在重新申请...');
+                    initAntiSleepProtection(); // 递归重新申请
+                });
+            }).catch(e => console.log("[Rebang] 唤醒锁获取受阻:", e));
+        } catch (e) {}
+    }
+
+    // 2. 强力心跳检测 (检测页面是否刚刚从“假死”中醒来)
+    let lastHeartbeat = Date.now();
+    const checkInterval = 2000; // 每2秒跳动一次
+    const freezeThreshold = 15000; // 阈值：如果超过15秒没跳动，判定为曾被冻结
+
+    setInterval(() => {
+        const now = Date.now();
+        const timeDiff = now - lastHeartbeat;
+
+        // 检测是否发生过“时间跳跃”（即页面被挂起）
+        if (timeDiff > freezeThreshold) {
+            console.warn(`[Rebang] ⚠️ 检测到页面曾被冻结 ${timeDiff / 1000}秒！`);
+            console.warn(`[Rebang] 正在执行“热重启”以恢复脚本活性...`);
+
+            // 【关键优化】: 强制刷新页面。
+            // 这解决了您提到的“需要重新打开才能加载”的问题。
+            // 刷新后，脚本会重新初始化，checkAutoStart() 会再次检查时间并立即运行。
+            window.location.reload();
+        }
+
+        // 3. 动态标题微扰 (防止Chrome强行休眠后台Tab)
+        // 仅在脚本开启状态下执行，在标题后加个点或去掉，制造“活动”假象
+        if (document.hidden && getVal(autoSearchLockKey, "off") === "on") {
+             const title = document.title;
+             if (title.endsWith(".")) document.title = title.slice(0, -1);
+             else document.title = title + ".";
+        }
+
+        lastHeartbeat = now;
+    }, checkInterval);
 }
 
 // ==========================================
@@ -1281,6 +1333,12 @@ function initSearchControls() {
 (function () {
   "use strict";
   $(document).ready(function () {
+
+    // >>>>>>>>>> 【在此处添加代码】 <<<<<<<<<<
+    // 初始化防休眠保护机制 (无论在搜索页还是积分页都运行)
+    initAntiSleepProtection();
+    // >>>>>>>>>> 【添加结束】 <<<<<<<<<<
+
     // 1. 如果是 Rewards 页面
     if (location.hostname === "rewards.bing.com") {
         if ($("#rebang-widget").length == 0) initRewardsControls();
@@ -1294,9 +1352,7 @@ function initSearchControls() {
               if ($("#rebang-widget").length == 0) { initSearchControls(); }
 
               // --- 周期性同步状态 (要求4) ---
-              // 检查我是否应该显示 UI，或者是否应该抢占主控权
               syncTabStatus();
-              // --------------------------
 
               // 检查自动启动 (包含跨天检查)
               checkAutoStart();
