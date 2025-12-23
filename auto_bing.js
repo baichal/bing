@@ -207,7 +207,7 @@ function syncTabStatus() {
     let isMaster = false;
     if (masterId === currentTabId) {
         isMaster = true;
-    } else if (now - lastRun > 20000) { 
+    } else if (now - lastRun > 20000) {
         // 【修复】将超时抢占时间从 15000 改为 20000 (20秒)
         // 因为最大随机延迟是14秒，15秒太极限了，容易导致主控还在跑就被抢走。
         setVal(globalMasterTabKey, currentTabId);
@@ -1257,6 +1257,9 @@ function initSearchControls() {
         setVal(jumpFailCountKey, 0);
         setVal(jumpLastPointsKey, -1);
         setVal(rewardsFailCountKey, 0);
+
+        setVal(globalMasterTabKey, currentTabId); // 强制设为当前页 ID
+        setVal(globalLockKey, Date.now());        // 更新活跃时间
 
         $(this).text("停止").addClass("stop");
         showUserMessage("初始化中...");
