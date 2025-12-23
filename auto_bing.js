@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版-全功能修复)
-// @version      2025.12.22.10
+// @version      2025.12.23.2
 // @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化。修复跨天不换榜问题。
 // @author       8969
 // @match        *://*.bing.com/search*
@@ -157,11 +157,19 @@ const autoStartMinKey = `${prefix}AutoStartMin`; // 自动开始分钟
 const limitSearchCountKey = `${prefix}LimitSearchCount`; // 每日搜索限制
 
 // ==========================================
-// 新增：多标签页互斥与协同逻辑常量
+// 多标签页互斥与协同逻辑常量
 // ==========================================
 const globalLockKey = `${prefix}GlobalLastRunTime`;   // 全局最后一次执行时间（所有标签页共享）
 const globalMasterTabKey = `${prefix}GlobalMasterTabId`; // 当前主控标签页的ID
-const currentTabId = Date.now() + "_" + Math.floor(Math.random() * 10000); // 当前页面的唯一ID
+// ==========================================
+// 使用 sessionStorage 固定当前标签页 ID
+// 这样即使搜索刷新页面，ID也不会变，主控权牢牢锁定在当前标签页
+// ==========================================
+let currentTabId = sessionStorage.getItem("Rebang_TabId");
+if (!currentTabId) {
+    currentTabId = Date.now() + "_" + Math.floor(Math.random() * 10000);
+    sessionStorage.setItem("Rebang_TabId", currentTabId);
+}
 
 // ==========================================
 // 新增：标签页状态同步函数
