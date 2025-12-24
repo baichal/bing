@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版-全功能修复)
-// @version      2025.12.23.2
+// @version      2025.12.24.1
 // @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化。修复跨天不换榜问题。
 // @author       8969
 // @match        *://*.bing.com/search*
@@ -19,7 +19,7 @@
 // 测试模式开关
 // 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
 // 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
-const TEST_MODE = 0;
+const TEST_MODE = 1; // <--- 已为您修改为1，调试完毕后请记得手动改回0
 const SCRIPT_LOAD_DATE = getLocalDateStr(); // 记录脚本加载时的日期.
 
 // ==========================================
@@ -94,12 +94,6 @@ GM_addStyle(`
     .b_dark #rebang-body::-webkit-scrollbar-thumb { background-color: #555; }
     .b_dark #rebang-body::-webkit-scrollbar-thumb:hover { background-color: #777; }
 
-    /* 自动部分深色适配 (Bing类名) */
-    .b_dark .auto-row {
-        background-color: #3a3a3a;
-        border-color: #444;
-    }
-
     /* === 通用组件样式 === */
     #rebang-header {
         padding: 10px 15px;
@@ -161,7 +155,7 @@ const limitSearchCountKey = `${prefix}LimitSearchCount`; // 每日搜索限制
 // ==========================================
 const globalLockKey = `${prefix}GlobalLastRunTime`;   // 全局最后一次执行时间（所有标签页共享）
 const globalMasterTabKey = `${prefix}GlobalMasterTabId`; // 当前主控标签页的ID
-const globalMasterStatusKey = `${prefix}GlobalMasterStatus`;
+const globalMasterStatusKey = `${prefix}GlobalMasterStatus`; //主控运行状态标识: "RUNNING" 或 "IDLE"
 // ==========================================
 // 使用 sessionStorage 固定当前标签页 ID
 // 这样即使搜索刷新页面，ID也不会变，主控权牢牢锁定在当前标签页
@@ -172,68 +166,11 @@ if (!currentTabId) {
     sessionStorage.setItem("Rebang_TabId", currentTabId);
 }
 
-// ==========================================
-// 标签页状态同步函数 (粘性主控修复版)
-// ==========================================
-function syncTabStatus() {
-    // 获取全局状态
-    let lastRun = Number(getVal(globalLockKey, 0));
-    let masterId = getVal(globalMasterTabKey, "");
-    let now = Date.now();
 
-    // 判断我是否是当前记录的主控
-    let isCurrentMaster = (masterId === currentTabId);
-
-    // 判断主控是否已经“死”了 (超过 20秒 没更新心跳)
-    // 注意：这个时间必须大于 搜索间隔+随机延迟 的最大值，防止正常冷却被误判为死亡
-    let isMasterDead = (now - lastRun > 20000);
-
-    let amIMaster = false;
-
-    // === 核心逻辑修改 ===
-
-    // 情况1：我是主控
-    if (isCurrentMaster) {
-        // 【绝对霸权】：只要我是主控，我就每秒刷新一次时间戳。
-        // 不管我是在搜索、在冷却、还是在看风景，只要脚本在跑，我就宣告“我活着”。
-        // 这样其他页面看到的 lastRun 永远是 "几毫秒前"，永远无法满足 > 20000 的抢占条件。
-        setVal(globalLockKey, now);
-        amIMaster = true;
-    }
-    // 情况2：没有主控，或者原主控已经死透了
-    else if (masterId === "" || isMasterDead) {
-        // 只有在这种极端情况下，我才上位
-        console.log(`[Rebang] 原主控已失效(超时${now-lastRun}ms)，当前标签页上位。`);
-        setVal(globalMasterTabKey, currentTabId);
-        setVal(globalLockKey, now);
-        amIMaster = true;
-    }
-    // 情况3：有其他主控活着
-    else {
-        // 老实待机，绝不尝试抢占，也不执行任何逻辑
-        amIMaster = false;
-    }
-
-    // === UI 状态同步 (保持显示) ===
-    if ($("#rebang-widget").length > 0) {
-        $("#rebang-widget").show();
-        if (amIMaster) {
-            $("#rebang-title").text("🔥 必应积分助手 (主控运行中)");
-            $("#rebang-widget").css("opacity", "1");
-        } else {
-            // 明确告知用户这是副机
-            $("#rebang-title").text("💤 必应积分助手 (副机等待)");
-            $("#rebang-widget").css("opacity", "0.6"); // 变暗一点让用户知道这个页面在偷懒
-        }
-    }
-
-    return amIMaster;
-}
 
 // ==========================================
 // 标签页状态同步函数
 // ==========================================
-// 用于判断当前标签页是否应该显示UI或执行任务
 function syncTabStatus() {
     let now = Date.now();
     let lastRun = Number(getVal(globalLockKey, 0));
@@ -268,16 +205,14 @@ function syncTabStatus() {
         // 1. 主控死掉了 (isMasterDead) -> 抢
         // 2. 主控还活着，但是它处于闲置状态 (Status == IDLE) -> 抢
         if (masterId === "" || isMasterDead || masterStatus === "IDLE") {
-
             console.log(`[Rebang] 检测到主控空闲或失效 (Status:${masterStatus}, Dead:${isMasterDead})，正在接管...`);
 
             // 抢夺主控权
             setVal(globalMasterTabKey, currentTabId);
             setVal(globalLockKey, now);
-            setVal(globalMasterStatusKey, "RUNNING"); // 先声明我在跑，防止别人马上又抢
+            setVal(globalMasterStatusKey, "RUNNING"); // 先声明我在跑
 
             // 【自动启动】: 接管后，立即开启自己的搜索开关
-            // 如果你只希望接管主控权但不自动开始跑，把下面这行去掉
             setVal(autoSearchLockKey, "on");
 
             // 立即刷新UI状态
@@ -297,7 +232,6 @@ function syncTabStatus() {
             $("#rebang-title").text("🔥 必应积分助手 (主控执行)");
             $("#rebang-widget").css("opacity", "1");
         } else {
-            // 显示正在等待主控
             let statusText = isMasterDead ? "主控无响应" : (masterStatus === "RUNNING" ? "主控忙碌中" : "主控空闲");
             $("#rebang-title").text(`💤 等待接力 (${statusText})`);
             $("#rebang-widget").css("opacity", "0.7");
@@ -627,7 +561,6 @@ function handleRewardsPage() {
 
     if (getVal(enableDailyTasksKey, false) !== true) {
         showUserMessage("未启用每日任务，返回...");
-        setTimeout(() => { window.location.href = "https://www.bing.com/search?q=Bing+Rewards"; }, 2000);
         return;
     }
 
@@ -700,7 +633,7 @@ function handleRewardsPage() {
     }
 
     // 熔断逻辑：单任务失败次数过多
-    if (hasPending && targetLink && failCount > maxRetries) {
+    if (hasPending && targetLink && failCount >= maxRetries) { 
         console.log(`[Rebang] Task limit (${failCount}) reached for: ${targetName}`);
         showUserMessage(`任务[${truncateText(targetName,6)}]多次无分，拉黑跳过...`);
 
@@ -728,7 +661,7 @@ function handleRewardsPage() {
              failCount++;
              setVal(rewardsFailCountKey, failCount);
 
-             if (failCount > maxRetries) {
+             if (failCount >= maxRetries) {
                  showUserMessage(`重试超限，准备跳过...`);
                  location.reload();
                  return;
@@ -769,7 +702,11 @@ function doAutoSearch() {
   }
   // -----------------------------------
 
-  let enableDaily = getVal(enableDailyTasksKey, false);
+  // 【修复关键】：优先读取 UI 复选框的实时状态，防止存储延迟导致读取为 false
+  let enableDaily = $("#ext-enable-dailytasks").length > 0 
+      ? $("#ext-enable-dailytasks").is(":checked") 
+      : getVal(enableDailyTasksKey, false);
+
   let dailyDone = getVal(getDailyTasksDoneKey(), false);
 
   // 1. 每日任务跳转逻辑 (优先执行)
@@ -860,7 +797,7 @@ function doAutoSearch() {
           setVal(getAutoSearchCountKey(), currentSearchCount);
           isPointsIncreased = true;
           setVal(consecutiveNoGainKey, 0);
-
+          
           // 【修复】积分涨了，说明当前页面正常，重置“换页重试计数”
           setVal(relayRetryKey, 0);
 
@@ -874,12 +811,6 @@ function doAutoSearch() {
               // 直接停止，不再尝试新建页面
               stopAutoSearch(`已连续 ${maxNoGainLimit} 次无积分，判定为今日达赫或IP限制，停止运行。`);
               return;
-          }
-              else {
-                  setVal(`${prefix}RelayRetryCount`, 0); // 重置以便下次手动开始
-                  stopAutoSearch(`已尝试换页但仍连续${maxNoGainLimit}次无积分，判定为今日达赫或IP限制。`);
-                  return;
-              }
           }
       }
   }
@@ -1150,6 +1081,8 @@ function initRewardsControls() {
         setTimeout(() => {
             window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Stopped";
         }, 1000);
+        setTimeout(() => {
+        }, 1000);
     });
 }
 
@@ -1297,28 +1230,42 @@ function initSearchControls() {
         // 保存设置
         if ($("#ext-daily-retries").length) setVal(dailyTaskMaxRetriesKey, $("#ext-daily-retries").val());
 
-        // 逻辑判断
-        if (TEST_MODE === 0) {
-            let limit = Number($("#ext-autosearch-limit").val());
-            let current = Number(getVal(getAutoSearchCountKey(), 0));
-            let dailyEnabled = getVal(enableDailyTasksKey, false);
-            let dailyDone = getVal(getDailyTasksDoneKey(), false);
-
-            if (current >= limit && (!dailyEnabled || dailyDone)) {
-                showUserMessage("今日任务已全部完成！");
-                return;
-            }
+        // 【关键修复】: 在点击开始的一瞬间，强制读取UI上复选框的状态并写入存储
+        // 防止出现"用户勾选了，但脚本读取到的是旧值"的情况
+        if ($("#ext-enable-dailytasks").length) {
+             let isChecked = $("#ext-enable-dailytasks").is(':checked');
+             setVal(enableDailyTasksKey, isChecked);
         }
-        else if (TEST_MODE === 1) {
-            // 测试模式：强制重置状态
+
+        // ▼▼▼【修改开始】▼▼▼
+
+        // 统一的逻辑判断区
+        if (TEST_MODE === 1) {
+            // 1. 如果是测试模式，先强制重置所有相关状态
+            showUserMessage("测试模式: 强制重置状态...");
             setVal(getDailyTasksDoneKey(), false);
             setVal(rewardsFailCountKey, 0);
             setVal(getDailyTaskRedirectTimeKey(), 0);
             setVal(jumpFailCountKey, 0);
-
             setVal(getAutoSearchCountKey(), 0);
-            showUserMessage("测试模式: 强制重置状态...");
+            // 重置后，让逻辑继续向下走，进行统一的完成状态判断
         }
+
+        // 2. 统一进行“是否完成”的判断 (无论何种模式)
+        let limit = Number($("#ext-autosearch-limit").val());
+        let current = Number(getVal(getAutoSearchCountKey(), 0));
+        
+        // 读取刚才强制同步过的状态
+        let dailyEnabled = getVal(enableDailyTasksKey, false);
+        let dailyDone = getVal(getDailyTasksDoneKey(), false);
+
+        // 如果搜索次数达标，并且任务部分也无需再做，则停止
+        if (current >= limit && (!dailyEnabled || dailyDone)) {
+            showUserMessage("今日任务已全部完成！");
+            return; // 阻止脚本启动
+        }
+        
+        // ▲▲▲【修改结束】▲▲▲
 
         setVal(autoSearchLockKey, "on");
         setVal(consecutiveNoGainKey, 0);
