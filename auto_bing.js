@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         微软Bing 必应积分自动脚本 (含每日任务-积分变化重试版-全功能修复)
-// @version      2025.12.25.2
+// @name         微软Bing 必应积分自动脚本
+// @version      2025.12.25.3
 // @description  必应 Bing 搜索添加今日热榜，悬浮窗模式，智能检测积分变化，自动换榜单，支持每日任务自动点击，延迟刷新确保任务完成，防死循环，重试逻辑改为基于积分变化。修复跨天不换榜问题。
 // @author       8969
 // @match        *://*.bing.com/search*
@@ -19,7 +19,7 @@
 // 测试模式开关
 // 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
 // 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
-const TEST_MODE = 0; // <--- 已为您修改为1，调试完毕后请记得手动改回0
+const TEST_MODE = 0 // <--- 已为您修改为1，调试完毕后请记得手动改回0
 const SCRIPT_LOAD_DATE = getLocalDateStr(); // 记录脚本加载时的日期.
 
 // ==========================================
@@ -462,13 +462,24 @@ function switchToNextChannel() {
 
     if (channelList && channelList.length > 0) {
         let currentIndex = channelList.indexOf(currentChannel);
+        // 确保不是最后一个
         if (currentIndex !== -1 && currentIndex < channelList.length - 1) {
             let nextChannel = channelList[currentIndex + 1];
+            
             showUserMessage(`本榜单已搜完，切换至: ${nextChannel}...`);
+            
+            // 1. 更新内部状态
             localStorage.setItem(selectedChannelKey, nextChannel);
             localStorage.setItem(currentKeywordIndexKey, 0);
-            sessionStorage.removeItem(`${prefix}${nextChannel}`); // 清除缓存以防万一
-            setTimeout(() => { location.reload(); }, 1000);
+            sessionStorage.removeItem(`${prefix}${nextChannel}`); // 清除新榜单的旧缓存
+            
+            // 2. 【新增】同步更新 UI 上的下拉框选项
+            $("#ext-channels").val(nextChannel);
+
+            // 3. 【修改】不再刷新页面，而是直接重新加载关键词
+            // 原代码: setTimeout(() => { location.reload(); }, 1000);
+            initKeywords(); 
+            
             return;
         }
     }
@@ -578,7 +589,7 @@ function handleRewardsPage() {
     let failCount = Number(getVal(rewardsFailCountKey, 0));
     let maxRetries = Number(getVal(dailyTaskMaxRetriesKey, 3));
     let blacklist = getTaskBlacklist();
-    
+
     // 【核心防死循环】获取本次运行已点击过的任务
     let sessionClicked = JSON.parse(sessionStorage.getItem("Rebang_SessionClicked") || "[]");
 
@@ -652,7 +663,7 @@ function handleRewardsPage() {
     }
 
     // 熔断：拉黑 (次数过多则拉黑)
-    if (hasPending && targetLink && failCount >= maxRetries) { 
+    if (hasPending && targetLink && failCount >= maxRetries) {
         showUserMessage(`任务[${truncateText(targetName,6)}]重试超限，拉黑...`);
         addTaskToBlacklist(targetUrl);
         setVal(rewardsFailCountKey, 0);
@@ -663,15 +674,13 @@ function handleRewardsPage() {
     // 全部完成
     if (!hasPending) {
         setVal(getDailyTasksDoneKey(), true);
-        // 清除会话记录
         sessionStorage.removeItem("Rebang_SessionClicked");
-        
-        showUserMessage("全部任务完成！准备返回...");
 
+        // 标记 lastPoints 为 null，告诉搜索页“我是新来的，别拿我和旧数据比”
+        setVal(lastPointsKey, null);
+
+        showUserMessage("任务检测完毕！返回搜索...");
         setTimeout(() => {
-             if (TEST_MODE === 1) {
-                 console.log("测试模式：流程结束，执行跳转返回。");
-             }
              window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Done";
         }, 1500);
         return;
@@ -702,8 +711,23 @@ function handleRewardsPage() {
         sessionStorage.setItem("Rebang_SessionClicked", JSON.stringify(sessionClicked));
 
         // 强制新标签页打开
-        targetLink.attr('target', '_blank');
-        targetLink[0].click();
+        try {
+            let tempLink = document.createElement('a');
+            tempLink.href = targetUrl;
+            tempLink.target = '_blank'; // 强制新标签页
+            tempLink.style.display = 'none';
+            document.body.appendChild(tempLink);
+
+            tempLink.click(); // 触发原生点击
+
+            setTimeout(() => {
+                document.body.removeChild(tempLink);
+            }, 100);
+        } catch (e) {
+            console.error("[Rebang] 点击异常:", e);
+            // 兜底方案
+            window.open(targetUrl, '_blank');
+        }
     }
 }
 
@@ -730,8 +754,8 @@ function doAutoSearch() {
   // -----------------------------------
 
   // 【修复关键】：优先读取 UI 复选框的实时状态，防止存储延迟导致读取为 false
-  let enableDaily = $("#ext-enable-dailytasks").length > 0 
-      ? $("#ext-enable-dailytasks").is(":checked") 
+  let enableDaily = $("#ext-enable-dailytasks").length > 0
+      ? $("#ext-enable-dailytasks").is(":checked")
       : getVal(enableDailyTasksKey, false);
 
   let dailyDone = getVal(getDailyTasksDoneKey(), false);
@@ -824,7 +848,7 @@ function doAutoSearch() {
           setVal(getAutoSearchCountKey(), currentSearchCount);
           isPointsIncreased = true;
           setVal(consecutiveNoGainKey, 0);
-          
+
           // 【修复】积分涨了，说明当前页面正常，重置“换页重试计数”
           setVal(relayRetryKey, 0);
 
@@ -911,23 +935,40 @@ function initChannels(channels, selectedChannel) {
 function initKeywords() {
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = sessionStorage.getItem(cacheKey);
+
+  // 如果本地有缓存，直接渲染
   if (keywords) {
     renderKeywords(JSON.parse(keywords));
   } else {
     showUserMessage("正在加载榜单...");
+    
+    // 发起请求
     $.ajax({
       url: "https://api.pearktrue.cn/api/dailyhot/?title=" + getCurrentChannel(),
       method: "GET",
-      timeout: 0,
+      timeout: 5000, // 【优化】增加5秒超时，防止网络卡死
     }).done(function (response) {
+      // 成功获取数据
       if (response.code == 200 && response.data) {
         keywords = response.data;
         sessionStorage.setItem(cacheKey, JSON.stringify(keywords));
         renderKeywords(keywords);
-        showUserMessage("");
+        showUserMessage(""); 
       } else {
-        showUserMessage(`获取热榜失败，请重试。`);
+        // 【修复】API返回错误码时，自动切换下一榜单
+        console.warn(`[Rebang] 当前榜单[${getCurrentChannel()}]获取失败，准备切换...`);
+        showUserMessage(`获取失败，2秒后自动切换下一榜单...`);
+        setTimeout(function() {
+            switchToNextChannel();
+        }, 2000);
       }
+    }).fail(function () {
+      // 【新增】网络请求彻底失败（如断网/404/超时）时的处理
+      console.warn(`[Rebang] 网络请求超时或失败，准备切换...`);
+      showUserMessage(`网络错误，2秒后自动切换下一榜单...`);
+      setTimeout(function() {
+          switchToNextChannel();
+      }, 2000);
     });
   }
 }
@@ -1281,7 +1322,7 @@ function initSearchControls() {
         // 2. 统一进行“是否完成”的判断 (无论何种模式)
         let limit = Number($("#ext-autosearch-limit").val());
         let current = Number(getVal(getAutoSearchCountKey(), 0));
-        
+
         // 读取刚才强制同步过的状态
         let dailyEnabled = getVal(enableDailyTasksKey, false);
         let dailyDone = getVal(getDailyTasksDoneKey(), false);
@@ -1291,7 +1332,7 @@ function initSearchControls() {
             showUserMessage("今日任务已全部完成！");
             return; // 阻止脚本启动
         }
-        
+
         // ▲▲▲【修改结束】▲▲▲
 
         setVal(autoSearchLockKey, "on");
