@@ -933,6 +933,9 @@ function initChannels(channels, selectedChannel) {
 
 // 初始化/获取关键词 (从 API)
 function initKeywords() {
+  if (window.Rebang_isLoading) return; 
+  window.Rebang_isLoading = true;
+    
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = sessionStorage.getItem(cacheKey);
 
@@ -948,6 +951,7 @@ function initKeywords() {
       method: "GET",
       timeout: 5000, // 【优化】增加5秒超时，防止网络卡死
     }).done(function (response) {
+        window.Rebang_isLoading = false; // 【新增】请求结束解锁
       // 成功获取数据
       if (response.code == 200 && response.data) {
         keywords = response.data;
@@ -963,6 +967,7 @@ function initKeywords() {
         }, 2000);
       }
     }).fail(function () {
+      window.Rebang_isLoading = false; // 【新增】失败也要解锁
       // 【新增】网络请求彻底失败（如断网/404/超时）时的处理
       console.warn(`[Rebang] 网络请求超时或失败，准备切换...`);
       showUserMessage(`网络错误，2秒后自动切换下一榜单...`);
