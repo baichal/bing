@@ -1,6 +1,5 @@
 # 微软 Bing 必应积分自动脚本使用指南
 
-**版本:** 2025.12.22.10  
 **适用浏览器:** Chrome, Edge, Firefox (需安装 Tampermonkey 扩展)
 
 ---
