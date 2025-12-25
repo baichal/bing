@@ -545,125 +545,146 @@ function addTaskToBlacklist(url) {
 // 页面逻辑：Rewards 任务页
 // ==========================================
 function handleRewardsPage() {
+    // 1. 基础状态检查
     let isLocked = getVal(autoSearchLockKey, "off");
     let currentPoints = getBingPoints();
 
+    // 更新积分显示
     if (currentPoints !== null) {
         $("#ext-rewards-points").text(currentPoints);
         setVal(lastPointsKey, currentPoints);
     }
 
-    // 如果脚本未开启，不执行任何操作
-    if (isLocked !== "on") {
-         showUserMessage("脚本未开启");
-         return;
-    }
+    // 脚本未开启或未启用每日任务时退出
+    if (isLocked !== "on") { showUserMessage("脚本未开启"); return; }
+    if (getVal(enableDailyTasksKey, false) !== true) { showUserMessage("未启用每日任务，返回..."); return; }
 
-    if (getVal(enableDailyTasksKey, false) !== true) {
-        showUserMessage("未启用每日任务，返回...");
-        return;
-    }
-
-    let $cardGroup = $("#more-activities");
-    if ($cardGroup.length === 0) {
-        showUserMessage("等待任务列表加载...");
-        return;
-    }
-
-    // 检测是否处于点击后的冷却期
+    // 2. 冷却时间检查 (缩短为5秒，提高效率)
     let lastClickTime = Number(getVal(rewardsClickTimeKey, 0));
     let now = new Date().getTime();
-    let waitDuration = 10000; // 每次点击后等待 10 秒验证
-
-    if (now - lastClickTime < waitDuration) {
-        let left = Math.ceil((waitDuration - (now - lastClickTime)) / 1000);
+    if (now - lastClickTime < 5000) {
+        let left = Math.ceil((5000 - (now - lastClickTime)) / 1000);
         showUserMessage(`等待验证... ${left}s`);
-
-        if (left <= 1) {
-             setVal(rewardsClickTimeKey, 0);
-             showUserMessage("刷新状态...");
-             location.reload();
-        }
+        if (left <= 1) { setVal(rewardsClickTimeKey, 0); location.reload(); }
         return;
     }
+
+    // 3. 获取任务卡片
+    let $cards = $("#more-activities mee-card");
+    if ($cards.length === 0) { showUserMessage("未找到任务卡片或加载中..."); return; }
 
     // 状态准备
     let rewardsLastPoints = Number(getVal(rewardsLastPointsKey, -1));
     let failCount = Number(getVal(rewardsFailCountKey, 0));
     let maxRetries = Number(getVal(dailyTaskMaxRetriesKey, 3));
     let blacklist = getTaskBlacklist();
+    
+    // 【核心防死循环】获取本次运行已点击过的任务
+    let sessionClicked = JSON.parse(sessionStorage.getItem("Rebang_SessionClicked") || "[]");
 
-    // 寻找未完成的任务
-    let $cards = $("#more-activities mee-card");
-    let hasPending = false;
     let targetLink = null;
     let targetName = "";
     let targetUrl = "";
+    let hasPending = false;
 
-    $cards.each(function() {
-        if (targetLink) return;
+    // >>>>>>>>>> 遍历任务逻辑 <<<<<<<<<<
+    $cards.each(function(index) {
+        if (targetLink) return; // 找到一个目标就停止
 
-        let $icon = $(this).find(".mee-icon-SkypeCircleCheck");
+        // [Check 1] 是否已完成 (绿色勾选)
+        // 修复：无论是否测试模式，只要有绿勾，说明肯定做完了，直接跳过
+        let $completedIcon = $(this).find(".mee-icon-SkypeCircleCheck");
+        if ($completedIcon.length > 0) return;
 
-        if ($icon.length === 0) { // 没有绿色勾勾
-            let $link = $(this).find("a");
-            if ($link.length > 0) {
-                let url = $link.attr("href");
+        // [Check 2] 是否被锁定
+        if ($(this).find(".locked-card").length > 0) return;
 
-                // 跳过黑名单
-                if (blacklist.includes(url)) {
-                    return;
-                }
+        // [Check 3] 获取链接
+        let $link = $(this).find("a");
+        if ($link.length === 0) return;
 
-                hasPending = true;
-                targetLink = $link;
-                targetName = $link.text().trim() || "任务";
-                targetUrl = url;
+        let url = $link.attr("href");
+        let name = $link.text().trim() || ("任务" + index);
+
+        // [Check 4] 协议过滤 (关键修复)
+        // 你的HTML中第一个任务是 "microsoft-edge://"，这会导致脚本异常，必须跳过
+        if (!url || url.indexOf("http") !== 0) {
+            console.log(`[Rebang] 跳过非HTTP任务: ${name}`);
+            return;
+        }
+
+        // [Check 5] 本次会话防重复 (关键修复)
+        // 如果刚才点过这个任务，页面刷新回来它还没变绿（Bing反应慢），坚决不点第二次
+        if (sessionClicked.includes(url)) {
+            console.log(`[Rebang] 本次已执行过，等待Bing更新: ${name}`);
+            return;
+        }
+
+        // [Check 6] 黑名单检查 (响应你的要求)
+        // 如果在黑名单里：
+        // - 正常模式：跳过
+        // - 测试模式 (TEST_MODE==1)：无视黑名单，强制重试
+        if (blacklist.includes(url)) {
+            if (TEST_MODE === 1) {
+                console.log(`[Rebang] 测试模式 - 强制重试黑名单任务: ${name}`);
+            } else {
+                return; // 正常跳过
             }
         }
+
+        // 找到有效任务
+        hasPending = true;
+        targetLink = $link;
+        targetName = name;
+        targetUrl = url;
     });
 
-    // 积分验证逻辑：如果积分涨了，重置失败计数
+    // ----------------------------------------------------
+    // 后续执行逻辑
+    // ----------------------------------------------------
+
+    // 积分验证：如果积分涨了，重置失败计数
     if (rewardsLastPoints !== -1 && currentPoints !== null) {
         if (currentPoints > rewardsLastPoints) {
-            if (failCount > 0) console.log(`[Rebang] Points increased! Reset fail count.`);
             failCount = 0;
             setVal(rewardsFailCountKey, 0);
         }
     }
 
-    // 熔断逻辑：单任务失败次数过多
+    // 熔断：拉黑 (次数过多则拉黑)
     if (hasPending && targetLink && failCount >= maxRetries) { 
-        console.log(`[Rebang] Task limit (${failCount}) reached for: ${targetName}`);
-        showUserMessage(`任务[${truncateText(targetName,6)}]多次无分，拉黑跳过...`);
-
-        addTaskToBlacklist(targetUrl); // 加入黑名单
-        setVal(rewardsFailCountKey, 0); // 重置计数
-        setTimeout(() => { location.reload(); }, 1500); // 刷新页面
+        showUserMessage(`任务[${truncateText(targetName,6)}]重试超限，拉黑...`);
+        addTaskToBlacklist(targetUrl);
+        setVal(rewardsFailCountKey, 0);
+        setTimeout(() => { location.reload(); }, 1500);
         return;
     }
 
-    // 所有任务完成或被跳过
-    if (!hasPending && $cards.length > 0) {
-        console.log("[Rebang] Daily tasks done (or all skipped).");
+    // 全部完成
+    if (!hasPending) {
         setVal(getDailyTasksDoneKey(), true);
-        showUserMessage("任务完成(或已跳过卡住任务)！返回...");
+        // 清除会话记录
+        sessionStorage.removeItem("Rebang_SessionClicked");
+        
+        showUserMessage("全部任务完成！准备返回...");
+
         setTimeout(() => {
-            window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Done";
+             if (TEST_MODE === 1) {
+                 console.log("测试模式：流程结束，执行跳转返回。");
+             }
+             window.location.href = "https://www.bing.com/search?q=Bing+Rewards+Done";
         }, 1500);
         return;
     }
 
     // 执行点击
     if (hasPending && targetLink) {
-        // 预判失败：如果不是第一次点击且积分没涨，先记一次失败
+        // 预判失败逻辑
         if (rewardsLastPoints !== -1 && currentPoints !== null && currentPoints <= rewardsLastPoints) {
              failCount++;
              setVal(rewardsFailCountKey, failCount);
-
              if (failCount >= maxRetries) {
-                 showUserMessage(`重试超限，准备跳过...`);
-                 location.reload();
+                 location.reload(); // 失败多次，强制刷新换运气
                  return;
              }
         } else if (currentPoints > rewardsLastPoints) {
@@ -671,11 +692,17 @@ function handleRewardsPage() {
             setVal(rewardsFailCountKey, 0);
         }
 
-        showUserMessage(`执行: ${truncateText(targetName, 8)} (失误:${failCount})`);
+        showUserMessage(`点击: ${truncateText(targetName, 8)}`);
 
         if (currentPoints !== null) setVal(rewardsLastPointsKey, currentPoints);
-
         setVal(rewardsClickTimeKey, now);
+
+        // 【关键】记录这个 URL 已经点过了，防止死循环
+        sessionClicked.push(targetUrl);
+        sessionStorage.setItem("Rebang_SessionClicked", JSON.stringify(sessionClicked));
+
+        // 强制新标签页打开
+        targetLink.attr('target', '_blank');
         targetLink[0].click();
     }
 }
