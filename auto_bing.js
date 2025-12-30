@@ -19,7 +19,7 @@
 // 测试模式开关
 // 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
 // 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
-const TEST_MODE = 0 // <--- 已为您修改为1，调试完毕后请记得手动改回0
+const TEST_MODE = 1 // <--- 已为您修改为1，调试完毕后请记得手动改回0
 const SCRIPT_LOAD_DATE = getLocalDateStr(); // 记录脚本加载时的日期.
 
 // ==========================================
@@ -465,21 +465,21 @@ function switchToNextChannel() {
         // 确保不是最后一个
         if (currentIndex !== -1 && currentIndex < channelList.length - 1) {
             let nextChannel = channelList[currentIndex + 1];
-            
+
             showUserMessage(`本榜单已搜完，切换至: ${nextChannel}...`);
-            
+
             // 1. 更新内部状态
             localStorage.setItem(selectedChannelKey, nextChannel);
             localStorage.setItem(currentKeywordIndexKey, 0);
             sessionStorage.removeItem(`${prefix}${nextChannel}`); // 清除新榜单的旧缓存
-            
+
             // 2. 【新增】同步更新 UI 上的下拉框选项
             $("#ext-channels").val(nextChannel);
 
             // 3. 【修改】不再刷新页面，而是直接重新加载关键词
             // 原代码: setTimeout(() => { location.reload(); }, 1000);
-            initKeywords(); 
-            
+            initKeywords();
+
             return;
         }
     }
@@ -570,7 +570,7 @@ function handleRewardsPage() {
     if (isLocked !== "on") { showUserMessage("脚本未开启"); return; }
     if (getVal(enableDailyTasksKey, false) !== true) { showUserMessage("未启用每日任务，返回..."); return; }
 
-    // 2. 冷却时间检查 (缩短为5秒，提高效率)
+    // 2. 冷却时间检查
     let lastClickTime = Number(getVal(rewardsClickTimeKey, 0));
     let now = new Date().getTime();
     if (now - lastClickTime < 5000) {
@@ -580,8 +580,14 @@ function handleRewardsPage() {
         return;
     }
 
-    // 3. 获取任务卡片
-    let $cards = $("#more-activities mee-card");
+    // 3. 获取任务卡片 (修复：扩大选择范围，包含每日任务和更多任务)
+    // 兼容新旧版面，查找页面所有的 mee-card
+    let $cards = $("mee-card");
+    if ($cards.length === 0) {
+        // 尝试备用选择器 (针对部分新版UI)
+        $cards = $(".c-card-content");
+    }
+
     if ($cards.length === 0) { showUserMessage("未找到任务卡片或加载中..."); return; }
 
     // 状态准备
@@ -590,7 +596,7 @@ function handleRewardsPage() {
     let maxRetries = Number(getVal(dailyTaskMaxRetriesKey, 3));
     let blacklist = getTaskBlacklist();
 
-    // 【核心防死循环】获取本次运行已点击过的任务
+    // 获取本次运行已点击过的任务
     let sessionClicked = JSON.parse(sessionStorage.getItem("Rebang_SessionClicked") || "[]");
 
     let targetLink = null;
@@ -602,39 +608,35 @@ function handleRewardsPage() {
     $cards.each(function(index) {
         if (targetLink) return; // 找到一个目标就停止
 
+        let $card = $(this);
+
         // [Check 1] 是否已完成 (绿色勾选)
-        // 修复：无论是否测试模式，只要有绿勾，说明肯定做完了，直接跳过
-        let $completedIcon = $(this).find(".mee-icon-SkypeCircleCheck");
+        // 查找多种完成图标样式
+        let $completedIcon = $card.find(".mee-icon-SkypeCircleCheck, .c-icon.check, i[class*='check']");
         if ($completedIcon.length > 0) return;
 
-        // [Check 2] 是否被锁定
-        if ($(this).find(".locked-card").length > 0) return;
+        // [Check 2] 是否被锁定 (未解锁的任务)
+        if ($card.find(".locked-card").length > 0) return;
 
-        // [Check 3] 获取链接
-        let $link = $(this).find("a");
+        // [Check 3] 获取链接 (优先找卡片内的链接)
+        let $link = $card.find("a").first();
         if ($link.length === 0) return;
 
         let url = $link.attr("href");
         let name = $link.text().trim() || ("任务" + index);
 
-        // [Check 4] 协议过滤 (关键修复)
-        // 你的HTML中第一个任务是 "microsoft-edge://"，这会导致脚本异常，必须跳过
+        // [Check 4] 协议过滤
         if (!url || url.indexOf("http") !== 0) {
-            console.log(`[Rebang] 跳过非HTTP任务: ${name}`);
+            // 忽略非http链接 (如 edge://)
             return;
         }
 
-        // [Check 5] 本次会话防重复 (关键修复)
-        // 如果刚才点过这个任务，页面刷新回来它还没变绿（Bing反应慢），坚决不点第二次
+        // [Check 5] 本次会话防重复
         if (sessionClicked.includes(url)) {
-            console.log(`[Rebang] 本次已执行过，等待Bing更新: ${name}`);
             return;
         }
 
-        // [Check 6] 黑名单检查 (响应你的要求)
-        // 如果在黑名单里：
-        // - 正常模式：跳过
-        // - 测试模式 (TEST_MODE==1)：无视黑名单，强制重试
+        // [Check 6] 黑名单检查
         if (blacklist.includes(url)) {
             if (TEST_MODE === 1) {
                 console.log(`[Rebang] 测试模式 - 强制重试黑名单任务: ${name}`);
@@ -645,7 +647,7 @@ function handleRewardsPage() {
 
         // 找到有效任务
         hasPending = true;
-        targetLink = $link;
+        targetLink = $link; // 保存 jQuery 对象，而非仅 URL
         targetName = name;
         targetUrl = url;
     });
@@ -675,8 +677,6 @@ function handleRewardsPage() {
     if (!hasPending) {
         setVal(getDailyTasksDoneKey(), true);
         sessionStorage.removeItem("Rebang_SessionClicked");
-
-        // 标记 lastPoints 为 null，告诉搜索页“我是新来的，别拿我和旧数据比”
         setVal(lastPointsKey, null);
 
         showUserMessage("任务检测完毕！返回搜索...");
@@ -693,7 +693,7 @@ function handleRewardsPage() {
              failCount++;
              setVal(rewardsFailCountKey, failCount);
              if (failCount >= maxRetries) {
-                 location.reload(); // 失败多次，强制刷新换运气
+                 location.reload();
                  return;
              }
         } else if (currentPoints > rewardsLastPoints) {
@@ -706,26 +706,26 @@ function handleRewardsPage() {
         if (currentPoints !== null) setVal(rewardsLastPointsKey, currentPoints);
         setVal(rewardsClickTimeKey, now);
 
-        // 【关键】记录这个 URL 已经点过了，防止死循环
         sessionClicked.push(targetUrl);
         sessionStorage.setItem("Rebang_SessionClicked", JSON.stringify(sessionClicked));
 
-        // 强制新标签页打开
+        // ==================================================
+        // 【核心修复】直接操作 DOM 元素点击
+        // ==================================================
         try {
-            let tempLink = document.createElement('a');
-            tempLink.href = targetUrl;
-            tempLink.target = '_blank'; // 强制新标签页
-            tempLink.style.display = 'none';
-            document.body.appendChild(tempLink);
+            // 1. 强制设置为新标签页打开，防止当前页面跳转
+            targetLink.attr('target', '_blank');
 
-            tempLink.click(); // 触发原生点击
+            // 2. 模拟原生点击事件 (比 click() 更底层，穿透力更强)
+            // 先尝试 jQuery 的 click
+            targetLink[0].click();
 
-            setTimeout(() => {
-                document.body.removeChild(tempLink);
-            }, 100);
+            // 如果上面没反应，或者为了保险，稍微延迟后再检查
+            console.log(`[Rebang] Triggered click on: ${targetName}`);
+
         } catch (e) {
-            console.error("[Rebang] 点击异常:", e);
-            // 兜底方案
+            console.error("[Rebang] 点击异常，尝试备用方案:", e);
+            // 兜底方案：直接打开窗口
             window.open(targetUrl, '_blank');
         }
     }
@@ -933,9 +933,6 @@ function initChannels(channels, selectedChannel) {
 
 // 初始化/获取关键词 (从 API)
 function initKeywords() {
-  if (window.Rebang_isLoading) return; 
-  window.Rebang_isLoading = true;
-    
   var cacheKey = getCurrentChannelKeywordsCacheKey();
   var keywords = sessionStorage.getItem(cacheKey);
 
@@ -944,20 +941,19 @@ function initKeywords() {
     renderKeywords(JSON.parse(keywords));
   } else {
     showUserMessage("正在加载榜单...");
-    
+
     // 发起请求
     $.ajax({
       url: "https://api.pearktrue.cn/api/dailyhot/?title=" + getCurrentChannel(),
       method: "GET",
       timeout: 5000, // 【优化】增加5秒超时，防止网络卡死
     }).done(function (response) {
-        window.Rebang_isLoading = false; // 【新增】请求结束解锁
       // 成功获取数据
       if (response.code == 200 && response.data) {
         keywords = response.data;
         sessionStorage.setItem(cacheKey, JSON.stringify(keywords));
         renderKeywords(keywords);
-        showUserMessage(""); 
+        showUserMessage("");
       } else {
         // 【修复】API返回错误码时，自动切换下一榜单
         console.warn(`[Rebang] 当前榜单[${getCurrentChannel()}]获取失败，准备切换...`);
@@ -967,7 +963,6 @@ function initKeywords() {
         }, 2000);
       }
     }).fail(function () {
-      window.Rebang_isLoading = false; // 【新增】失败也要解锁
       // 【新增】网络请求彻底失败（如断网/404/超时）时的处理
       console.warn(`[Rebang] 网络请求超时或失败，准备切换...`);
       showUserMessage(`网络错误，2秒后自动切换下一榜单...`);
