@@ -19,7 +19,7 @@
 // 测试模式开关
 // 1: 开启测试模式。点击“开始”时，强制重置今日所有状态（用于调试）。
 // 0: 正常模式。智能判断是否已完成，完成后不再重复运行。
-const TEST_MODE = 1; // <--- 调试完毕后请记得手动改回0
+const TEST_MODE = 0; // <--- 调试完毕后请记得手动改回0
 const SCRIPT_LOAD_DATE = getLocalDateStr(); // 记录脚本加载时的日期.
 
 // ==========================================
@@ -135,20 +135,20 @@ function getVal(key, defaultValue) { return GM_getValue(key, defaultValue); }
 function setVal(key, value) { GM_setValue(key, value); }
 
 const prefix = "Rebang_";
-const autoSearchLockKey = `${prefix}AutoSearchLock`; 
-const enableDailyTasksKey = `${prefix}EnableDailyTasks`; 
-const maxNoGainLimitKey = `${prefix}MaxNoGainLimit`; 
-const dailyTaskMaxRetriesKey = `${prefix}DailyTaskMaxRetries`; 
-const autoSearchLockExpiresKey = `${prefix}AutoSearchLockExpires`; 
-const consecutiveNoGainKey = `${prefix}ConsecutiveNoGainCount`; 
-const lastPointsKey = `${prefix}LastPoints`; 
-const autoStartHourKey = `${prefix}AutoStartHour`; 
-const autoStartMinKey = `${prefix}AutoStartMin`; 
-const limitSearchCountKey = `${prefix}LimitSearchCount`; 
+const autoSearchLockKey = `${prefix}AutoSearchLock`;
+const enableDailyTasksKey = `${prefix}EnableDailyTasks`;
+const maxNoGainLimitKey = `${prefix}MaxNoGainLimit`;
+const dailyTaskMaxRetriesKey = `${prefix}DailyTaskMaxRetries`;
+const autoSearchLockExpiresKey = `${prefix}AutoSearchLockExpires`;
+const consecutiveNoGainKey = `${prefix}ConsecutiveNoGainCount`;
+const lastPointsKey = `${prefix}LastPoints`;
+const autoStartHourKey = `${prefix}AutoStartHour`;
+const autoStartMinKey = `${prefix}AutoStartMin`;
+const limitSearchCountKey = `${prefix}LimitSearchCount`;
 
-const globalLockKey = `${prefix}GlobalLastRunTime`;   
-const globalMasterTabKey = `${prefix}GlobalMasterTabId`; 
-const globalMasterStatusKey = `${prefix}GlobalMasterStatus`; 
+const globalLockKey = `${prefix}GlobalLastRunTime`;
+const globalMasterTabKey = `${prefix}GlobalMasterTabId`;
+const globalMasterStatusKey = `${prefix}GlobalMasterStatus`;
 
 let currentTabId = sessionStorage.getItem("Rebang_TabId");
 if (!currentTabId) {
@@ -178,7 +178,7 @@ function syncTabStatus() {
         if (masterId === "" || isMasterDead || masterStatus === "IDLE") {
             setVal(globalMasterTabKey, currentTabId);
             setVal(globalLockKey, now);
-            setVal(globalMasterStatusKey, "RUNNING"); 
+            setVal(globalMasterStatusKey, "RUNNING");
             setVal(autoSearchLockKey, "on");
 
             $("#ext-autosearch-lock").text("停止").addClass("stop");
@@ -202,17 +202,17 @@ function syncTabStatus() {
     return isMaster;
 }
 
-const rewardsFailCountKey = `${prefix}RewardsFailCount`; 
-const rewardsLastPointsKey = `${prefix}RewardsLastPoints`; 
-const jumpFailCountKey = `${prefix}JumpFailCount`; 
-const jumpLastPointsKey = `${prefix}JumpLastPoints`; 
-const rewardsClickTimeKey = `${prefix}RewardsClickTime`; 
+const rewardsFailCountKey = `${prefix}RewardsFailCount`;
+const rewardsLastPointsKey = `${prefix}RewardsLastPoints`;
+const jumpFailCountKey = `${prefix}JumpFailCount`;
+const jumpLastPointsKey = `${prefix}JumpLastPoints`;
+const rewardsClickTimeKey = `${prefix}RewardsClickTime`;
 
-const selectedChannelKey = `${prefix}SelectedChannel`; 
-const currentKeywordIndexKey = `${prefix}CurrentKeywordIndex`; 
-const channelListKey = `${prefix}Channels`; 
-const widgetPosKey = `${prefix}WidgetPosition`; 
-const widgetStateKey = `${prefix}WidgetState`; 
+const selectedChannelKey = `${prefix}SelectedChannel`;
+const currentKeywordIndexKey = `${prefix}CurrentKeywordIndex`;
+const channelListKey = `${prefix}Channels`;
+const widgetPosKey = `${prefix}WidgetPosition`;
+const widgetStateKey = `${prefix}WidgetState`;
 
 const getDailyTaskRedirectTimeKey = () => `${prefix}DailyTaskRedirectTime`;
 
@@ -233,15 +233,15 @@ function initAntiSleepProtection() {
         try {
             navigator.wakeLock.request('screen').then(lock => {
                 lock.addEventListener('release', () => {
-                    initAntiSleepProtection(); 
+                    initAntiSleepProtection();
                 });
             }).catch(e => console.log("[Rebang] 唤醒锁获取受阻:", e));
         } catch (e) {}
     }
 
     let lastHeartbeat = Date.now();
-    const checkInterval = 2000; 
-    const freezeThreshold = 15000; 
+    const checkInterval = 2000;
+    const freezeThreshold = 15000;
 
     setInterval(() => {
         const now = Date.now();
@@ -329,7 +329,7 @@ function stopAutoSearch(msg) {
 
 function checkAndRandomizeDailyChannel(channelList) {
     if (!channelList || channelList.length === 0) return;
-    const todayStr = getLocalDateStr(); 
+    const todayStr = getLocalDateStr();
     const lastSelectDate = localStorage.getItem(`${prefix}LastAutoSelectDate`);
 
     if (lastSelectDate !== todayStr) {
@@ -345,23 +345,42 @@ function checkAndRandomizeDailyChannel(channelList) {
     }
 }
 
+// 切换到下一个榜单 (当前榜单搜完时)
 function switchToNextChannel() {
     let channelList = JSON.parse(sessionStorage.getItem(channelListKey));
     let currentChannel = getCurrentChannel();
+
     if (channelList && channelList.length > 0) {
         let currentIndex = channelList.indexOf(currentChannel);
+        let nextChannel;
+
+        // 如果不是最后一个，顺延到下一个
         if (currentIndex !== -1 && currentIndex < channelList.length - 1) {
-            let nextChannel = channelList[currentIndex + 1];
+            nextChannel = channelList[currentIndex + 1];
             showUserMessage(`本榜单已搜完，切换至: ${nextChannel}...`);
-            localStorage.setItem(selectedChannelKey, nextChannel);
-            localStorage.setItem(currentKeywordIndexKey, 0);
-            sessionStorage.removeItem(`${prefix}${nextChannel}`);
-            $("#ext-channels").val(nextChannel);
-            initKeywords();
-            return;
+        } else {
+            // 【核心修改】所有榜单都搜完了，不再停止，而是随机选一个重新开始
+            let randomIndex = Math.floor(Math.random() * channelList.length);
+            nextChannel = channelList[randomIndex];
+            showUserMessage(`全榜单轮询完毕，随机重置为: ${nextChannel}...`);
         }
+
+        // 1. 更新内部状态
+        localStorage.setItem(selectedChannelKey, nextChannel);
+        localStorage.setItem(currentKeywordIndexKey, 0); // 进度归零，从第一个词重新开始
+        sessionStorage.removeItem(`${prefix}${nextChannel}`); // 清除新榜单的旧缓存，强制拉取API最新数据
+
+        // 2. 同步更新 UI 上的下拉框选项
+        $("#ext-channels").val(nextChannel);
+
+        // 3. 重新拉取词库并继续
+        initKeywords();
+
+        return;
     }
-    stopAutoSearch("所有榜单已完成或无法切换。");
+    
+    // 只有在获取不到榜单列表（如网络彻底断开）这种极端情况下才停止
+    stopAutoSearch("榜单列表为空或网络异常，无法切换。");
 }
 
 function truncateText(str, maxlength) { return str.length > maxlength ? str.slice(0, maxlength - 1) + "…" : str; }
@@ -371,16 +390,16 @@ function showUserMessage(msg) { $("#ex-user-msg").text(msg); }
 
 function doSearch(keyword) {
     let $input = $("#sb_form_q");
-    let $btn = $("#sb_form_go"); 
-    if ($btn.length === 0) $btn = $("#sb_form_submit"); 
-    if ($btn.length === 0) $btn = $(".search_icon, .b_searchboxSubmit"); 
+    let $btn = $("#sb_form_go");
+    if ($btn.length === 0) $btn = $("#sb_form_submit");
+    if ($btn.length === 0) $btn = $(".search_icon, .b_searchboxSubmit");
 
     if ($input.length > 0 && $btn.length > 0) {
         $input.val(keyword);
         try {
             let evt = new Event('input', { bubbles: true });
             $input[0].dispatchEvent(evt);
-            $input[0].value = keyword; 
+            $input[0].value = keyword;
         } catch(e) {}
         $btn[0].click();
     }
@@ -429,6 +448,7 @@ function handleRewardsPage() {
         "mee-card", 
         ".c-card-content", 
         "a[class*='CardRewards']", 
+        ".flex-row:has(h3)", // 【匹配二级页面子任务】
         "span[role='link'][href]",
         "a[role='link'][href]"
     ].join(", ");
@@ -454,9 +474,9 @@ function handleRewardsPage() {
         if (targetLink) return;
 
         let $card = $(this);
-
         let url = $card.attr("href");
         let $childLink = null;
+        
         if (!url) {
             $childLink = $card.find("a[href], span[role='link'][href]").first();
             if ($childLink.length > 0) {
@@ -465,7 +485,6 @@ function handleRewardsPage() {
         }
         if (!url) return;
 
-        // 补全相对路径
         let fullUrl = url;
         if (fullUrl.startsWith('/')) {
             fullUrl = window.location.origin + fullUrl;
@@ -474,63 +493,59 @@ function handleRewardsPage() {
         let urlObj;
         try {
             urlObj = new URL(fullUrl);
-        } catch(e) {
-            return;
-        }
+        } catch(e) { return; }
 
         let pathname = urlObj.pathname.toLowerCase();
         let hostname = urlObj.hostname.toLowerCase();
 
-        // 强力拦截：过滤导航菜单与无效的兑换/邀请链接
-        if (pathname === '/earn' || 
-            pathname === '/dashboard' || 
-            pathname.startsWith('/redeem') || 
-            pathname === '/about' || 
-            pathname === '/refer' || 
-            pathname === '/faq' ||
-            pathname === '/welcome') {
-            return;
-        }
+        // 强力拦截：过滤导航菜单、Logo与无效的兑换/邀请/推广链接
+        if (pathname === '/' || pathname === '/earn' || pathname === '/dashboard' || 
+            pathname.startsWith('/redeem') || pathname === '/about' || 
+            pathname === '/refer' || pathname === '/faq' || pathname === '/welcome') return;
 
-        if (pathname.includes('referandearn') || 
-            hostname.includes('x.com') || 
-            hostname.includes('twitter.com') || 
+        if (pathname.includes('referandearn') || fullUrl.includes('rwgbopen=1') ||
+            hostname.includes('x.com') || hostname.includes('twitter.com') || 
             (hostname.includes('microsoft.com') && pathname.includes('/edge')) ||
-            hostname.includes('xbox.com') ) {
-            return;
-        }
+            hostname.includes('xbox.com') ) return;
 
-        // [Check 1] 是否已完成
+        // 【完成判定】
         let isCompleted = false;
-        // 旧版打钩
         if ($card.find(".mee-icon-SkypeCircleCheck, .c-icon.check, i[class*='check']").length > 0) isCompleted = true;
-        // 新版特定成功背景色
         if ($card.find(".bg-statusSuccessBg3").length > 0) isCompleted = true;
         if ($card.closest('.flex-row').find('.bg-statusSuccessBg3').length > 0) isCompleted = true;
         if (isCompleted) return;
 
-        //[Check 2] 是否被锁定 (锁图标或不可用属性)
-        if ($card.find(".locked-card").length > 0) return;
-        if ($card.attr('aria-disabled') === 'true' || $card.attr('data-disabled') === 'true') return;
-        if ($card.hasClass('cursor-not-allowed') || $card.hasClass('bg-neutralBgDisabled')) return;
-        // 新版 SVG 锁图标识别
-        if ($card.closest('.flex-row').find("path[d^='M5 3.5a3']").length > 0) return;
+        // 【锁定判定】多重深度判定未解锁状态 (aria-disabled, 样式类, 锁头SVG图标特征 M5 3.5a3)
+        let isItemLocked = false;
+        if ($card.find(".locked-card").length > 0) isItemLocked = true;
+        
+        let $checkTarget = $childLink ? $childLink : $card;
+        if ($checkTarget.attr('aria-disabled') === 'true' || $checkTarget.attr('data-disabled') === 'true') isItemLocked = true;
+        if ($checkTarget.is('[aria-disabled="true"],[data-disabled="true"]')) isItemLocked = true;
+        if ($checkTarget.hasClass('cursor-not-allowed') || $checkTarget.hasClass('bg-neutralBgDisabled')) isItemLocked = true;
 
-        let name = $card.text().replace(/\s+/g, ' ').trim().substring(0, 20) || ("任务" + index);
+        if ($card.find("path[d^='M5 3.5a3']").length > 0) isItemLocked = true;
+        if ($card.closest('.flex-row').find("path[d^='M5 3.5a3']").length > 0) isItemLocked = true;
 
-        // [Check 3] 协议过滤
+        if (isItemLocked) return;
+
+        let name = $card.find("h3").length > 0 
+                 ? $card.find("h3").text().replace(/\s+/g, ' ').trim().substring(0, 20) 
+                 : $card.text().replace(/\s+/g, ' ').trim().substring(0, 20) || ("任务" + index);
+
         if (fullUrl.indexOf("http") !== 0) return;
 
-        // [Check 4] 本次会话防重复
-        if (sessionClicked.includes(fullUrl)) return;
+        // 【核心修复一】调整了顺序：优先校验黑名单！
+        // 识别纯路径防止参数干扰黑名单
+        let normalizedUrl = urlObj.origin + urlObj.pathname;
+        if (blacklist.includes(fullUrl) || blacklist.includes(normalizedUrl)) {
+            return; // 遇到黑名单，直接无视该卡片
+        }
 
-        // [Check 5] 黑名单检查
-        if (blacklist.includes(fullUrl)) {
-            if (TEST_MODE === 1) {
-                console.log(`[Rebang] 测试模式 - 强制重试黑名单任务: ${name}`);
-            } else {
-                return;
-            }
+        // 【核心修复二】黑名单校验通过后，再判断是否属于刚打开的等待窗口
+        if (sessionClicked.includes(fullUrl)) {
+            hasPending = true;
+            return;
         }
 
         hasPending = true;
@@ -554,11 +569,12 @@ function handleRewardsPage() {
         return;
     }
 
-    // 全部完成
     if (!hasPending) {
-        // 如果我们当前在多层级任务详情页内（如 /earn/quest/），完成后应当关闭页面，防止死循环
+        // 如果是在多层级任务详情页内（Quest），没有可做任务了就把当前二级页面加入黑名单，防止主页再次点击它
         if (window.location.pathname.includes('/earn/quest/')) {
-            showUserMessage("当前详情页任务完毕！安全关闭子页面...");
+            showUserMessage("子任务暂无剩余项！拉黑本组并安全关闭...");
+            let currentQuestUrl = window.location.origin + window.location.pathname;
+            addTaskToBlacklist(currentQuestUrl);
             setTimeout(() => { window.close(); }, 1500);
             return;
         }
@@ -574,7 +590,6 @@ function handleRewardsPage() {
         return;
     }
 
-    // 执行点击
     if (hasPending && targetLink) {
         if (rewardsLastPoints !== -1 && currentPoints !== null && currentPoints <= rewardsLastPoints) {
              failCount++;
@@ -595,6 +610,8 @@ function handleRewardsPage() {
 
         sessionClicked.push(targetUrl);
         sessionStorage.setItem("Rebang_SessionClicked", JSON.stringify(sessionClicked));
+        
+        sessionStorage.setItem("Rebang_WaitCount", 0);
 
         try {
             targetLink.attr('target', '_blank');
@@ -603,6 +620,26 @@ function handleRewardsPage() {
         } catch (e) {
             console.error("[Rebang] 点击异常，尝试备用方案:", e);
             window.open(targetUrl, '_blank');
+        }
+    } else if (hasPending && !targetLink) {
+        let waitCount = Number(sessionStorage.getItem("Rebang_WaitCount") || "0");
+        waitCount++;
+        sessionStorage.setItem("Rebang_WaitCount", waitCount);
+        
+        showUserMessage(`等待子任务完成... (${waitCount * 3}s)`);
+        
+        // 【核心修复三】死循环强制斩断网！
+        // 如果主页面苦等了超过18秒（6次）依然没有变化，直接将刚才点击的任务拉黑并刷新，让主线继续往下跑！
+        if (waitCount > 6) { 
+            let clickedArr = JSON.parse(sessionStorage.getItem("Rebang_SessionClicked") || "[]");
+            if (clickedArr.length > 0) {
+                let lastClicked = clickedArr[clickedArr.length - 1]; // 拿到引发卡死的那个链接
+                showUserMessage(`任务响应超时，强制跳过...`);
+                addTaskToBlacklist(lastClicked); // 直接加入黑名单
+            }
+            sessionStorage.setItem("Rebang_WaitCount", 0);
+            sessionStorage.removeItem("Rebang_SessionClicked"); // 清除本次点击记录，防止继续检测它
+            location.reload();
         }
     }
 }
@@ -614,7 +651,7 @@ function doAutoSearch() {
   let isMaster = syncTabStatus();
   let lastGlobalRun = Number(getVal(globalLockKey, 0));
   let nowTime = Date.now();
-  const relayRetryKey = `${prefix}RelayRetryCount`; 
+  const relayRetryKey = `${prefix}RelayRetryCount`;
 
   if (!isMaster) {
       console.log(`[Rebang] Slave tab standby. Waiting for Master.`);
@@ -670,7 +707,7 @@ function doAutoSearch() {
       setVal(rewardsFailCountKey, 0);
 
       setTimeout(() => {
-          // 核心更新点：统一从旧版跳转至全新的任务中心 (/earn) 
+          // 核心更新点：统一从旧版跳转至全新的任务中心 (/earn)
           window.location.href = "https://rewards.bing.com/earn";
       }, 1000);
       return;
@@ -784,7 +821,7 @@ function initKeywords() {
     $.ajax({
       url: "https://api.pearktrue.cn/api/dailyhot/?title=" + getCurrentChannel(),
       method: "GET",
-      timeout: 5000, 
+      timeout: 5000,
     }).done(function (response) {
       if (response.code == 200 && response.data) {
         keywords = response.data;
@@ -959,7 +996,7 @@ function initRewardsControls() {
 }
 
 function initSearchControls() {
-  if (window.top !== window.self) return; 
+  if (window.top !== window.self) return;
   $("#rebang").remove(); $("#rebang-widget").remove();
 
   if ($("#rebang-widget").length == 0) {
@@ -1112,7 +1149,7 @@ function initSearchControls() {
 
         if (current >= limit && (!dailyEnabled || dailyDone)) {
             showUserMessage("今日任务已全部完成！");
-            return; 
+            return;
         }
 
         setVal(autoSearchLockKey, "on");
@@ -1121,8 +1158,8 @@ function initSearchControls() {
         setVal(jumpLastPointsKey, -1);
         setVal(rewardsFailCountKey, 0);
 
-        setVal(globalMasterTabKey, currentTabId); 
-        setVal(globalLockKey, Date.now());        
+        setVal(globalMasterTabKey, currentTabId);
+        setVal(globalLockKey, Date.now());
 
         $(this).text("停止").addClass("stop");
         showUserMessage("初始化中...");
@@ -1159,7 +1196,7 @@ function initSearchControls() {
               if ($("#ext-autosearch-limit").val() && $("#ext-autosearch-limit").val().trim() != "" && getVal(autoSearchLockKey, "off") == "on") {
                  doAutoSearch();
               }
-            }, 1000); 
+            }, 1000);
         }
     }
   });
