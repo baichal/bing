@@ -157,6 +157,7 @@ if (!currentTabId) {
 }
 
 function syncTabStatus() {
+    if (window.name === 'rebang_search_tab') return false;
     let now = Date.now();
     let lastRun = Number(getVal(globalLockKey, 0));
     let masterId = getVal(globalMasterTabKey, "");
@@ -206,6 +207,8 @@ const rewardsFailCountKey = `${prefix}RewardsFailCount`;
 const rewardsLastPointsKey = `${prefix}RewardsLastPoints`;
 const jumpFailCountKey = `${prefix}JumpFailCount`;
 const jumpLastPointsKey = `${prefix}JumpLastPoints`;
+const sharedPointsKey   = `${prefix}SharedPoints`;
+let searchTabRef = null;
 const rewardsClickTimeKey = `${prefix}RewardsClickTime`;
 
 const selectedChannelKey = `${prefix}SelectedChannel`;
@@ -238,24 +241,6 @@ function initAntiSleepProtection() {
             }).catch(e => console.log("[Rebang] 唤醒锁获取受阻:", e));
         } catch (e) {}
     }
-
-    let lastHeartbeat = Date.now();
-    const checkInterval = 2000;
-    const freezeThreshold = 15000;
-
-    setInterval(() => {
-        const now = Date.now();
-        const timeDiff = now - lastHeartbeat;
-        if (timeDiff > freezeThreshold) {
-            window.location.reload();
-        }
-        if (document.hidden && getVal(autoSearchLockKey, "off") === "on") {
-             const title = document.title;
-             if (title.endsWith(".")) document.title = title.slice(0, -1);
-             else document.title = title + ".";
-        }
-        lastHeartbeat = now;
-    }, checkInterval);
 }
 
 // 辅助解析函数：安全解析积分文本
@@ -378,7 +363,7 @@ function switchToNextChannel() {
 
         return;
     }
-    
+
     // 只有在获取不到榜单列表（如网络彻底断开）这种极端情况下才停止
     stopAutoSearch("榜单列表为空或网络异常，无法切换。");
 }
@@ -389,22 +374,15 @@ function getCurrentChannel() { return localStorage.getItem(selectedChannelKey) ?
 function showUserMessage(msg) { $("#ex-user-msg").text(msg); }
 
 function doSearch(keyword) {
-    let $input = $("#sb_form_q");
-    let $btn = $("#sb_form_go");
-    if ($btn.length === 0) $btn = $("#sb_form_submit");
-    if ($btn.length === 0) $btn = $(".search_icon, .b_searchboxSubmit");
-
-    if ($input.length > 0 && $btn.length > 0) {
-        $input.val(keyword);
-        try {
-            let evt = new Event('input', { bubbles: true });
-            $input[0].dispatchEvent(evt);
-            $input[0].value = keyword;
-        } catch(e) {}
-        $btn[0].click();
-    }
-    else {
-        window.location.href = "https://www.bing.com/search?q=" + encodeURIComponent(keyword) + "&form=QBRE&sp=-1&lq=0";
+    const url = "https://www.bing.com/search?q=" + encodeURIComponent(keyword) + "&form=QBRE&sp=-1&lq=0";
+    try {
+        if (!searchTabRef || searchTabRef.closed) {
+            searchTabRef = window.open(url, 'rebang_search_tab');
+        } else {
+            searchTabRef.location.href = url;
+        }
+    } catch(e) {
+        searchTabRef = window.open(url, 'rebang_search_tab');
     }
 }
 
@@ -445,9 +423,9 @@ function handleRewardsPage() {
 
     // 兼容新旧版任务组件选择器
     let taskSelectors =[
-        "mee-card", 
-        ".c-card-content", 
-        "a[class*='CardRewards']", 
+        "mee-card",
+        ".c-card-content",
+        "a[class*='CardRewards']",
         ".flex-row:has(h3)", // 【匹配二级页面子任务】
         "span[role='link'][href]",
         "a[role='link'][href]"
@@ -476,7 +454,7 @@ function handleRewardsPage() {
         let $card = $(this);
         let url = $card.attr("href");
         let $childLink = null;
-        
+
         if (!url) {
             $childLink = $card.find("a[href], span[role='link'][href]").first();
             if ($childLink.length > 0) {
@@ -499,12 +477,12 @@ function handleRewardsPage() {
         let hostname = urlObj.hostname.toLowerCase();
 
         // 强力拦截：过滤导航菜单、Logo与无效的兑换/邀请/推广链接
-        if (pathname === '/' || pathname === '/earn' || pathname === '/dashboard' || 
-            pathname.startsWith('/redeem') || pathname === '/about' || 
+        if (pathname === '/' || pathname === '/earn' || pathname === '/dashboard' ||
+            pathname.startsWith('/redeem') || pathname === '/about' ||
             pathname === '/refer' || pathname === '/faq' || pathname === '/welcome') return;
 
         if (pathname.includes('referandearn') || fullUrl.includes('rwgbopen=1') ||
-            hostname.includes('x.com') || hostname.includes('twitter.com') || 
+            hostname.includes('x.com') || hostname.includes('twitter.com') ||
             (hostname.includes('microsoft.com') && pathname.includes('/edge')) ||
             hostname.includes('xbox.com') ) return;
 
@@ -518,7 +496,7 @@ function handleRewardsPage() {
         // 【锁定判定】多重深度判定未解锁状态 (aria-disabled, 样式类, 锁头SVG图标特征 M5 3.5a3)
         let isItemLocked = false;
         if ($card.find(".locked-card").length > 0) isItemLocked = true;
-        
+
         let $checkTarget = $childLink ? $childLink : $card;
         if ($checkTarget.attr('aria-disabled') === 'true' || $checkTarget.attr('data-disabled') === 'true') isItemLocked = true;
         if ($checkTarget.is('[aria-disabled="true"],[data-disabled="true"]')) isItemLocked = true;
@@ -529,8 +507,8 @@ function handleRewardsPage() {
 
         if (isItemLocked) return;
 
-        let name = $card.find("h3").length > 0 
-                 ? $card.find("h3").text().replace(/\s+/g, ' ').trim().substring(0, 20) 
+        let name = $card.find("h3").length > 0
+                 ? $card.find("h3").text().replace(/\s+/g, ' ').trim().substring(0, 20)
                  : $card.text().replace(/\s+/g, ' ').trim().substring(0, 20) || ("任务" + index);
 
         if (fullUrl.indexOf("http") !== 0) return;
@@ -610,7 +588,7 @@ function handleRewardsPage() {
 
         sessionClicked.push(targetUrl);
         sessionStorage.setItem("Rebang_SessionClicked", JSON.stringify(sessionClicked));
-        
+
         sessionStorage.setItem("Rebang_WaitCount", 0);
 
         try {
@@ -625,12 +603,12 @@ function handleRewardsPage() {
         let waitCount = Number(sessionStorage.getItem("Rebang_WaitCount") || "0");
         waitCount++;
         sessionStorage.setItem("Rebang_WaitCount", waitCount);
-        
+
         showUserMessage(`等待子任务完成... (${waitCount * 3}s)`);
-        
+
         // 【核心修复三】死循环强制斩断网！
         // 如果主页面苦等了超过18秒（6次）依然没有变化，直接将刚才点击的任务拉黑并刷新，让主线继续往下跑！
-        if (waitCount > 6) { 
+        if (waitCount > 6) {
             let clickedArr = JSON.parse(sessionStorage.getItem("Rebang_SessionClicked") || "[]");
             if (clickedArr.length > 0) {
                 let lastClicked = clickedArr[clickedArr.length - 1]; // 拿到引发卡死的那个链接
@@ -676,6 +654,10 @@ function doAutoSearch() {
       setVal(globalMasterTabKey, currentTabId);
 
       let currentPoints = getBingPoints();
+      if (currentPoints === null) {
+          const _shared = getVal(sharedPointsKey, null);
+          if (_shared !== null) currentPoints = Number(_shared);
+      }
       let jumpLastPoints = Number(getVal(jumpLastPointsKey, -1));
       let jumpFailCount = Number(getVal(jumpFailCountKey, 0));
 
@@ -707,13 +689,16 @@ function doAutoSearch() {
       setVal(rewardsFailCountKey, 0);
 
       setTimeout(() => {
-          // 核心更新点：统一从旧版跳转至全新的任务中心 (/earn)
           window.location.href = "https://rewards.bing.com/earn";
       }, 1000);
       return;
   }
 
   let currentPoints = getBingPoints();
+  if (currentPoints === null) {
+      const _shared = getVal(sharedPointsKey, null);
+      if (_shared !== null) currentPoints = Number(_shared);
+  }
   if (currentPoints === null) {
       if (document.readyState === 'complete') { currentPoints = 0; }
       else { return; }
@@ -997,6 +982,9 @@ function initRewardsControls() {
 
 function initSearchControls() {
   if (window.top !== window.self) return;
+  if (window.name === 'rebang_search_tab') {
+      return;
+  }
   $("#rebang").remove(); $("#rebang-widget").remove();
 
   if ($("#rebang-widget").length == 0) {
@@ -1188,15 +1176,27 @@ function initSearchControls() {
     // 2. 如果在 搜索 页面
     else {
         if (window.top === window.self) {
-          this.intervalId = this.intervalId || setInterval(function () {
-              if ($("#rebang-widget").length == 0) { initSearchControls(); }
-              syncTabStatus();
-              checkAutoStart();
+            this.intervalId = this.intervalId || setInterval(function () {
+            // 所有标签页都初始化悬浮窗
+            if ($("#rebang-widget").length == 0) { initSearchControls(); }
 
-              if ($("#ext-autosearch-limit").val() && $("#ext-autosearch-limit").val().trim() != "" && getVal(autoSearchLockKey, "off") == "on") {
-                 doAutoSearch();
-              }
-            }, 1000);
+            // 搜索标签页只上报积分，不参与主控竞争，不执行任何自动化逻辑
+            if (window.name === 'rebang_search_tab') {
+                const _pts = getBingPoints();
+                if (_pts !== null) setVal(sharedPointsKey, _pts);
+                return;
+            }
+
+            syncTabStatus();
+            checkAutoStart();
+
+            const _pts = getBingPoints();
+            if (_pts !== null) setVal(sharedPointsKey, _pts);
+
+            if ($("#ext-autosearch-limit").val() && $("#ext-autosearch-limit").val().trim() != "" && getVal(autoSearchLockKey, "off") == "on") {
+                doAutoSearch();
+            }
+        }, 1000);
         }
     }
   });
